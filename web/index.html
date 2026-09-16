@@ -1,0 +1,637 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<title>Mộc — Image Watermarking Tool</title>
+<style>
+  :root {
+    --bg: #12151d;
+    --panel: #1a1f2b;
+    --panel-2: #212736;
+    --border: #2c3244;
+    --text: #e7e4db;
+    --text-dim: #8a90a3;
+    --accent: #cf9a4c;
+    --accent-strong: #e3b567;
+    --accent-dim: rgba(207, 154, 76, 0.16);
+    --mono: ui-monospace, "SFMono-Regular", "Cascadia Code", Consolas, "Liberation Mono", monospace;
+    --sans: -apple-system, BlinkMacSystemFont, "Segoe UI", "Malgun Gothic", "Apple SD Gothic Neo", Roboto, sans-serif;
+  }
+
+  * { box-sizing: border-box; }
+
+  body {
+    margin: 0;
+    background: var(--bg);
+    color: var(--text);
+    font-family: var(--sans);
+    min-height: 100vh;
+  }
+
+  .app {
+    max-width: 1180px;
+    margin: 0 auto;
+    padding: 28px 20px 60px;
+  }
+
+  .topbar {
+    display: flex;
+    align-items: center;
+    margin-bottom: 28px;
+  }
+
+  .brand { display: flex; align-items: center; gap: 14px; }
+
+  .brand-mark {
+    width: 44px;
+    height: 44px;
+    border: 1.5px solid var(--accent);
+    border-radius: 4px;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    font-family: var(--mono);
+    font-size: 20px;
+    color: var(--accent-strong);
+    flex-shrink: 0;
+  }
+
+  h1 {
+    margin: 0;
+    font-size: 22px;
+    letter-spacing: 0.02em;
+  }
+
+  .eyebrow {
+    margin: 2px 0 0;
+    font-family: var(--mono);
+    font-size: 11px;
+    letter-spacing: 0.08em;
+    color: var(--text-dim);
+  }
+
+  .layout {
+    display: grid;
+    grid-template-columns: 300px 1fr;
+    gap: 20px;
+    align-items: start;
+  }
+
+  @media (max-width: 800px) {
+    .layout { grid-template-columns: 1fr; }
+  }
+
+  .controls {
+    background: var(--panel);
+    border: 1px solid var(--border);
+    border-radius: 10px;
+    padding: 20px;
+    display: flex;
+    flex-direction: column;
+    gap: 18px;
+  }
+
+  .field { display: flex; flex-direction: column; gap: 8px; }
+
+  .field-head {
+    display: flex;
+    justify-content: space-between;
+    align-items: baseline;
+  }
+
+  label {
+    font-size: 12.5px;
+    color: var(--text-dim);
+    letter-spacing: 0.01em;
+  }
+
+  .value {
+    font-family: var(--mono);
+    font-size: 12px;
+    color: var(--accent-strong);
+  }
+
+  input[type="text"] {
+    background: var(--panel-2);
+    border: 1px solid var(--border);
+    border-radius: 6px;
+    padding: 10px 12px;
+    color: var(--text);
+    font-family: var(--sans);
+    font-size: 14px;
+  }
+
+  input[type="text"]:focus {
+    outline: none;
+    border-color: var(--accent);
+  }
+
+  input[type="range"] {
+    -webkit-appearance: none;
+    width: 100%;
+    height: 4px;
+    background: var(--panel-2);
+    border-radius: 2px;
+    border: 1px solid var(--border);
+  }
+
+  input[type="range"]::-webkit-slider-thumb {
+    -webkit-appearance: none;
+    width: 15px;
+    height: 15px;
+    border-radius: 50%;
+    background: var(--accent);
+    cursor: pointer;
+    border: 2px solid var(--bg);
+  }
+
+  input[type="range"]::-moz-range-thumb {
+    width: 13px;
+    height: 13px;
+    border-radius: 50%;
+    background: var(--accent);
+    cursor: pointer;
+    border: 2px solid var(--bg);
+  }
+
+  .range-caption {
+    display: flex;
+    justify-content: space-between;
+    font-family: var(--mono);
+    font-size: 10px;
+    text-transform: uppercase;
+    letter-spacing: 0.06em;
+    color: var(--text-dim);
+  }
+
+  .swatches { display: flex; gap: 8px; }
+
+  .swatch {
+    width: 26px;
+    height: 26px;
+    border-radius: 50%;
+    background: var(--swatch);
+    border: 2px solid var(--border);
+    cursor: pointer;
+    padding: 0;
+  }
+
+  .swatch.active { border-color: var(--accent); }
+
+  .segmented {
+    display: flex;
+    border: 1px solid var(--border);
+    border-radius: 6px;
+    overflow: hidden;
+  }
+
+  .seg-btn {
+    flex: 1;
+    background: var(--panel-2);
+    color: var(--text-dim);
+    border: none;
+    padding: 9px 8px;
+    font-size: 11.5px;
+    font-family: var(--sans);
+    cursor: pointer;
+    border-right: 1px solid var(--border);
+  }
+
+  .seg-btn:last-child { border-right: none; }
+
+  .seg-btn.active {
+    background: var(--accent-dim);
+    color: var(--accent-strong);
+  }
+
+  .primary-btn {
+    background: var(--accent);
+    color: #1a1305;
+    border: none;
+    border-radius: 6px;
+    padding: 12px;
+    font-size: 14px;
+    font-weight: 600;
+    cursor: pointer;
+    margin-top: 4px;
+  }
+
+  .primary-btn:disabled {
+    background: var(--panel-2);
+    color: var(--text-dim);
+    cursor: not-allowed;
+  }
+
+  .hint {
+    margin: 0;
+    font-size: 11.5px;
+    color: var(--text-dim);
+    text-align: center;
+  }
+
+  .footnote {
+    margin: 4px 0 0;
+    font-size: 10.5px;
+    color: var(--text-dim);
+    text-align: center;
+    line-height: 1.5;
+  }
+
+  .preview-wrap { display: flex; flex-direction: column; gap: 10px; }
+
+  .preview-toolbar {
+    display: flex;
+    justify-content: flex-end;
+  }
+
+  .text-btn {
+    background: none;
+    border: none;
+    color: var(--accent-strong);
+    font-size: 12.5px;
+    cursor: pointer;
+    font-family: var(--mono);
+  }
+
+  .dropzone {
+    background: var(--panel);
+    border: 1px dashed var(--border);
+    border-radius: 10px;
+    min-height: 420px;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    padding: 24px;
+    transition: border-color 0.15s ease;
+  }
+
+  .dropzone.drag-over { border-color: var(--accent); }
+
+  .dropzone-empty { text-align: center; }
+
+  .dropzone-empty p { margin: 0; color: var(--text-dim); font-size: 14px; }
+
+  .dropzone-empty .or {
+    margin: 10px 0;
+    font-family: var(--mono);
+    font-size: 10px;
+    text-transform: uppercase;
+    letter-spacing: 0.1em;
+  }
+
+  .secondary-btn {
+    background: var(--panel-2);
+    border: 1px solid var(--border);
+    color: var(--text);
+    padding: 10px 18px;
+    border-radius: 6px;
+    font-size: 13px;
+    cursor: pointer;
+  }
+
+  .canvas-frame {
+    position: relative;
+    display: inline-block;
+    max-width: 100%;
+    margin: 0 auto;
+  }
+
+  .corner {
+    position: absolute;
+    width: 16px;
+    height: 16px;
+    border-color: var(--accent);
+    border-style: solid;
+    border-width: 0;
+    opacity: 0.85;
+  }
+
+  .corner.tl { top: -8px; left: -8px; border-top-width: 2px; border-left-width: 2px; }
+  .corner.tr { top: -8px; right: -8px; border-top-width: 2px; border-right-width: 2px; }
+  .corner.bl { bottom: -8px; left: -8px; border-bottom-width: 2px; border-left-width: 2px; }
+  .corner.br { bottom: -8px; right: -8px; border-bottom-width: 2px; border-right-width: 2px; }
+
+  #canvas {
+    display: block;
+    max-width: 100%;
+    max-height: 68vh;
+    width: auto;
+    height: auto;
+    border-radius: 2px;
+  }
+
+  .meta-strip {
+    display: flex;
+    justify-content: center;
+    gap: 8px;
+    font-family: var(--mono);
+    font-size: 11.5px;
+    color: var(--text-dim);
+  }
+
+  .meta-strip .dot { color: var(--border); }
+  .meta-strip span:not(.dot) { color: var(--text-dim); }
+  #meta-res, #meta-format { color: var(--accent-strong); }
+</style>
+</head>
+<body>
+  <div class="app">
+    <header class="topbar">
+      <div class="brand">
+        <span class="brand-mark">木</span>
+        <div>
+          <h1>Mộc</h1>
+          <p class="eyebrow">IMAGE WATERMARKING · RESOLUTION PRESERVED</p>
+        </div>
+      </div>
+    </header>
+
+    <main class="layout">
+      <aside class="controls">
+        <div class="field">
+          <label for="wm-text">Watermark text</label>
+          <input id="wm-text" type="text" value="@yourhandle" />
+        </div>
+
+        <div class="field">
+          <div class="field-head">
+            <label for="wm-opacity">Opacity</label>
+            <span class="value" id="opacity-value">35%</span>
+          </div>
+          <input id="wm-opacity" type="range" min="5" max="100" value="35" />
+        </div>
+
+        <div class="field">
+          <div class="field-head">
+            <label for="wm-spacing">Density</label>
+            <span class="value" id="spacing-value">220px</span>
+          </div>
+          <input id="wm-spacing" type="range" min="60" max="400" step="10" value="220" />
+          <div class="range-caption"><span>Dense</span><span>Sparse</span></div>
+        </div>
+
+        <div class="field">
+          <div class="field-head">
+            <label for="wm-fontsize">Font size</label>
+            <span class="value" id="fontsize-value">34px</span>
+          </div>
+          <input id="wm-fontsize" type="range" min="14" max="120" value="34" />
+        </div>
+
+        <div class="field">
+          <div class="field-head">
+            <label for="wm-angle">Rotation angle</label>
+            <span class="value" id="angle-value">30°</span>
+          </div>
+          <input id="wm-angle" type="range" min="0" max="90" value="30" />
+        </div>
+
+        <div class="field">
+          <label>Watermark color</label>
+          <div class="swatches">
+            <button type="button" class="swatch active" data-color="#ffffff" style="--swatch:#ffffff"></button>
+            <button type="button" class="swatch" data-color="#000000" style="--swatch:#000000"></button>
+            <button type="button" class="swatch" data-color="#cf9a4c" style="--swatch:#cf9a4c"></button>
+          </div>
+        </div>
+
+        <div class="field">
+          <label>Export format</label>
+          <div class="segmented">
+            <button type="button" class="seg-btn active" data-format="png">PNG · lossless</button>
+            <button type="button" class="seg-btn" data-format="jpeg">JPEG · smaller size</button>
+          </div>
+        </div>
+
+        <button id="download-btn" class="primary-btn" disabled>Download image</button>
+        <p class="hint" id="download-hint">Choose an image to start</p>
+        <p class="footnote">Everything runs locally in your browser — images are never uploaded to any server.</p>
+      </aside>
+
+      <section class="preview-wrap">
+        <div class="preview-toolbar" id="preview-toolbar" hidden>
+          <button type="button" id="change-btn" class="text-btn">Change image</button>
+        </div>
+        <div id="dropzone" class="dropzone">
+          <input id="file-input" type="file" accept="image/*" hidden />
+          <div class="dropzone-empty" id="dropzone-empty">
+            <p>Drag an image here</p>
+            <p class="or">or</p>
+            <button type="button" id="browse-btn" class="secondary-btn">Choose image file</button>
+          </div>
+          <div class="canvas-frame" id="canvas-frame" hidden>
+            <span class="corner tl"></span>
+            <span class="corner tr"></span>
+            <span class="corner bl"></span>
+            <span class="corner br"></span>
+            <canvas id="canvas"></canvas>
+          </div>
+        </div>
+        <div class="meta-strip" id="meta-strip" hidden>
+          <span id="meta-res">—</span>
+          <span class="dot">·</span>
+          <span id="meta-format">—</span>
+          <span class="dot">·</span>
+          <span>1:1 · lossless</span>
+        </div>
+      </section>
+    </main>
+  </div>
+
+<script>
+(function () {
+  const fileInput = document.getElementById('file-input');
+  const browseBtn = document.getElementById('browse-btn');
+  const changeBtn = document.getElementById('change-btn');
+  const previewToolbar = document.getElementById('preview-toolbar');
+  const dropzone = document.getElementById('dropzone');
+  const dropzoneEmpty = document.getElementById('dropzone-empty');
+  const canvasFrame = document.getElementById('canvas-frame');
+  const canvas = document.getElementById('canvas');
+  const ctx = canvas.getContext('2d');
+  const metaStrip = document.getElementById('meta-strip');
+  const metaRes = document.getElementById('meta-res');
+  const metaFormat = document.getElementById('meta-format');
+
+  const textInput = document.getElementById('wm-text');
+  const opacityInput = document.getElementById('wm-opacity');
+  const spacingInput = document.getElementById('wm-spacing');
+  const fontsizeInput = document.getElementById('wm-fontsize');
+  const angleInput = document.getElementById('wm-angle');
+
+  const opacityValue = document.getElementById('opacity-value');
+  const spacingValue = document.getElementById('spacing-value');
+  const fontsizeValue = document.getElementById('fontsize-value');
+  const angleValue = document.getElementById('angle-value');
+
+  const downloadBtn = document.getElementById('download-btn');
+  const downloadHint = document.getElementById('download-hint');
+  const segButtons = document.querySelectorAll('.seg-btn');
+  const swatches = document.querySelectorAll('.swatch');
+
+  let originalImage = null;
+  let originalName = 'image';
+  let outputFormat = 'png';
+  let currentColor = '#ffffff';
+  let rafPending = false;
+
+  function hexToRgb(hex) {
+    const n = parseInt(hex.replace('#', ''), 16);
+    return [(n >> 16) & 255, (n >> 8) & 255, n & 255];
+  }
+
+  function scheduleRedraw() {
+    if (!originalImage || rafPending) return;
+    rafPending = true;
+    requestAnimationFrame(() => { rafPending = false; redraw(); });
+  }
+
+  function drawWatermarkGrid(width, height, text, opacityPct, spacing, fontSize, angleDeg, color) {
+    if (!text) return;
+    const [r, g, b] = hexToRgb(color);
+    ctx.save();
+    ctx.translate(width / 2, height / 2);
+    ctx.rotate(angleDeg * Math.PI / 180);
+    ctx.font = `bold ${fontSize}px "Noto Sans KR", "Malgun Gothic", "Apple SD Gothic Neo", -apple-system, "Segoe UI", Roboto, sans-serif`;
+    ctx.fillStyle = `rgba(${r},${g},${b},${Math.max(0, Math.min(100, opacityPct)) / 100})`;
+    ctx.textBaseline = 'top';
+
+    const diagonal = Math.sqrt(width * width + height * height) + spacing * 2;
+    const half = diagonal / 2;
+    let row = 0;
+    for (let y = -half; y < half; y += spacing) {
+      const offsetX = (row % 2 === 1) ? spacing / 2 : 0;
+      for (let x = -half - spacing; x < half + spacing; x += spacing) {
+        ctx.fillText(text, x + offsetX, y);
+      }
+      row++;
+    }
+    ctx.restore();
+  }
+
+  function redraw() {
+    if (!originalImage) return;
+    ctx.clearRect(0, 0, canvas.width, canvas.height);
+    if (outputFormat === 'jpeg') {
+      ctx.fillStyle = '#ffffff';
+      ctx.fillRect(0, 0, canvas.width, canvas.height);
+    }
+    ctx.drawImage(originalImage, 0, 0, canvas.width, canvas.height);
+    drawWatermarkGrid(
+      canvas.width,
+      canvas.height,
+      textInput.value,
+      Number(opacityInput.value),
+      Number(spacingInput.value),
+      Number(fontsizeInput.value),
+      Number(angleInput.value),
+      currentColor
+    );
+  }
+
+  function loadFile(file) {
+    if (!file || !file.type.startsWith('image/')) return;
+    originalName = file.name.replace(/\.[^.]+$/, '') || 'image';
+    const reader = new FileReader();
+    reader.onload = (e) => {
+      const img = new Image();
+      img.onload = () => {
+        originalImage = img;
+        canvas.width = img.naturalWidth;
+        canvas.height = img.naturalHeight;
+        dropzoneEmpty.hidden = true;
+        canvasFrame.hidden = false;
+        metaStrip.hidden = false;
+        previewToolbar.hidden = false;
+        metaRes.textContent = img.naturalWidth + ' × ' + img.naturalHeight + 'px';
+        metaFormat.textContent = outputFormat.toUpperCase();
+        downloadBtn.disabled = false;
+        downloadHint.textContent = 'Matches the original ' + img.naturalWidth + '×' + img.naturalHeight + 'px resolution';
+        redraw();
+      };
+      img.src = e.target.result;
+    };
+    reader.readAsDataURL(file);
+  }
+
+  browseBtn.addEventListener('click', () => fileInput.click());
+  changeBtn.addEventListener('click', () => fileInput.click());
+  fileInput.addEventListener('change', (e) => loadFile(e.target.files[0]));
+
+  ['dragenter', 'dragover'].forEach((evt) => {
+    dropzone.addEventListener(evt, (e) => {
+      e.preventDefault();
+      dropzone.classList.add('drag-over');
+    });
+  });
+  ['dragleave', 'drop'].forEach((evt) => {
+    dropzone.addEventListener(evt, (e) => {
+      e.preventDefault();
+      dropzone.classList.remove('drag-over');
+    });
+  });
+  dropzone.addEventListener('drop', (e) => {
+    const file = e.dataTransfer.files && e.dataTransfer.files[0];
+    loadFile(file);
+  });
+
+  textInput.addEventListener('input', scheduleRedraw);
+
+  opacityInput.addEventListener('input', () => {
+    opacityValue.textContent = opacityInput.value + '%';
+    scheduleRedraw();
+  });
+  spacingInput.addEventListener('input', () => {
+    spacingValue.textContent = spacingInput.value + 'px';
+    scheduleRedraw();
+  });
+  fontsizeInput.addEventListener('input', () => {
+    fontsizeValue.textContent = fontsizeInput.value + 'px';
+    scheduleRedraw();
+  });
+  angleInput.addEventListener('input', () => {
+    angleValue.textContent = angleInput.value + '°';
+    scheduleRedraw();
+  });
+
+  swatches.forEach((sw) => {
+    sw.addEventListener('click', () => {
+      swatches.forEach((s) => s.classList.remove('active'));
+      sw.classList.add('active');
+      currentColor = sw.dataset.color;
+      scheduleRedraw();
+    });
+  });
+
+  segButtons.forEach((btn) => {
+    btn.addEventListener('click', () => {
+      segButtons.forEach((b) => b.classList.remove('active'));
+      btn.classList.add('active');
+      outputFormat = btn.dataset.format;
+      metaFormat.textContent = outputFormat.toUpperCase();
+      scheduleRedraw();
+    });
+  });
+
+  downloadBtn.addEventListener('click', () => {
+    if (!originalImage) return;
+    const mime = outputFormat === 'jpeg' ? 'image/jpeg' : 'image/png';
+    const ext = outputFormat === 'jpeg' ? 'jpg' : 'png';
+    const quality = outputFormat === 'jpeg' ? 0.98 : undefined;
+    canvas.toBlob((blob) => {
+      if (!blob) return;
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement('a');
+      a.href = url;
+      a.download = originalName + '_watermark.' + ext;
+      document.body.appendChild(a);
+      a.click();
+      a.remove();
+      URL.revokeObjectURL(url);
+    }, mime, quality);
+  });
+})();
+</script>
+</body>
+</html>

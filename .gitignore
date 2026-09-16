@@ -1,0 +1,18 @@
+# Python
+__pycache__/
+*.pyc
+.venv/
+venv/
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Editor
+.vscode/
+.idea/
+
+# Output images (uncomment if you don't want to track test outputs)
+# output/
+# *_watermark.jpg
+# *_watermark.png
