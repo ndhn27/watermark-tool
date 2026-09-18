@@ -7,6 +7,7 @@ recompression is documented to destroy the payload, so that's not
 something to assert against an encoder here, just a known property.
 """
 
+import numpy as np
 from PIL import Image
 
 import wmcore
@@ -50,3 +51,40 @@ def test_extract_on_unstamped_image_returns_none():
     img = _solid_rgba_image(rgb=(100, 100, 100))
     img.save("/tmp/_wm_test_unstamped.png")
     assert extract_invisible("/tmp/_wm_test_unstamped.png") is None
+
+
+def test_extract_on_random_noise_does_not_false_positive():
+    # A large, genuinely random image (not stamped at all) is the realistic
+    # adversarial case for the corroboration check: with enough pixels,
+    # short spurious "valid UTF-8" decodes at a single offset do happen by
+    # chance, so a correct implementation must not accept one on sight -
+    # see _find_payload()'s corroboration step in extract_invisible.py.
+    rng = np.random.default_rng(0)
+    arr = rng.integers(0, 256, size=(512, 512, 3), dtype=np.uint8)
+    Image.fromarray(arr, "RGB").save("/tmp/_wm_test_noise.png")
+    assert extract_invisible("/tmp/_wm_test_noise.png") is None
+
+
+def test_survives_top_left_corner_painted_over():
+    # This is the whole point of tiling the payload across the image
+    # (see wmcore.embed_invisible's docstring): a repeat should still be
+    # readable even if the copy at the very start of the image (the
+    # top-left corner, offset 0 in raster order) is destroyed. Regression
+    # test for the extractor only ever having looked at offset 0.
+    img = _solid_rgba_image(width=64, height=64)
+    stamped = wmcore.embed_invisible(img, "@yourhandle")
+    arr = np.array(stamped.convert("RGB"))
+    arr[0:10, :] = (10, 10, 10)  # paint over the first ~10 rows (kills the offset-0 copy)
+    Image.fromarray(arr, "RGB").save("/tmp/_wm_test_corner_painted.png")
+    assert extract_invisible("/tmp/_wm_test_corner_painted.png") == "@yourhandle"
+
+
+def test_survives_top_rows_cropped():
+    # Same idea as the paint-over case, but via an actual crop (removing
+    # rows, keeping full width) rather than overwriting pixels in place.
+    img = _solid_rgba_image(width=64, height=64)
+    stamped = wmcore.embed_invisible(img, "@yourhandle")
+    arr = np.array(stamped.convert("RGB"))
+    cropped = arr[10:, :]  # drop the top 10 rows entirely
+    Image.fromarray(cropped, "RGB").save("/tmp/_wm_test_rows_cropped.png")
+    assert extract_invisible("/tmp/_wm_test_rows_cropped.png") == "@yourhandle"

@@ -40,11 +40,79 @@ in principle be separated from the base image. The CLI addresses both:
   DCT/frequency-domain or learned watermarking, a much larger project) —
   but it can confirm provenance on a losslessly-saved copy even if the
   visible grid gets cropped or painted over. Save as PNG when using it.
+  The payload is tiled back-to-back across the whole image for exactly
+  this reason, and `extract_invisible.py` scans the entire image for a
+  surviving repeat (not just the top-left corner) — a repeat is only
+  trusted once a second copy elsewhere confirms it, to avoid false
+  positives from ordinary pixel noise. If the corner **and** most other
+  repeats are gone (e.g. a crop that changes both width and height, which
+  can break up individual repeats even when some survive), it may still
+  fall back to a single uncorroborated match rather than reporting
+  nothing.
 - **Provenance metadata** (`--author`, `--copyright`, images only) —
   written into real EXIF (JPEG, via `piexif`) or PNG text chunks, so tools
   that read standard metadata see attribution even without looking at the
   pixels. Anyone can strip metadata, so treat this as a complementary
   signal, not the main defense.
+
+## Threat model
+
+Worth being explicit about what "removal-resistant" means here, because
+it means different things depending on who's trying to remove the mark.
+
+**What this defends against — casual / incidental removal.** Someone
+crops the image, paints over part of it, takes a screenshot, re-uploads
+through a platform that recompresses it, or just doesn't notice a
+single corner logo. This is the everyday case the grid, the jitter, the
+blend modes, and the invisible LSB backup are built for, and it's a
+realistic bar to clear: most removal in the wild is casual, not
+adversarial.
+
+**What this does *not* defend against — a motivated adversary who knows
+the scheme.** Per-tile jitter specifically defeats naive frequency-domain
+estimation (FFT-averaging a fixed periodic pattern across many stamped
+images), but that's one specific attack, not immunity in general. No
+publicly known image watermarking technique — DCT/DWT, spread-spectrum,
+or learned marks like HiDDEN/StegaStamp, including ones baked directly
+into a diffusion model's seed (Tree-Ring, Gaussian Shading) — reliably
+survives someone who deliberately targets it with tools like:
+
+- **Regeneration / diffusion-purification attacks** — encode the image,
+  add noise, and let a diffusion model (or VAE) resynthesize it; the
+  reconstruction preserves perceptual content but not a low-amplitude
+  watermark signal sitting off the "natural image" manifold. Zhao et al.
+  gave a provable treatment of this and showed it empirically breaking
+  several watermarking schemes (*"Invisible Image Watermarks Are
+  Provably Removable Using Generative AI"*, NeurIPS 2024). Follow-up work
+  extends the same idea to marks embedded in a diffusion model's own
+  seed/latent rather than pixel space.
+- **Collusion / averaging attacks** — with several images carrying a
+  correlated pattern, simply averaging them out can estimate and
+  subtract a "robust" watermark; this is the pixel-domain reason per-tile
+  jitter matters here.
+- **Adaptive / white-box optimization** — with access to the detector
+  (or a good enough guess at the embedding scheme), directly optimizing
+  a small perturbation to flip detection.
+- **Desynchronization** — rotation, scaling, or local warping breaks
+  correlation-based detectors unless they resynchronize first; a
+  classical weakness predating any of the generative-AI attacks above.
+
+`WAVES` (An et al., ICML 2024) standardizes exactly this kind of stress
+test and found vulnerabilities in several widely-used watermarking
+methods once regeneration and adversarial attacks were included
+alongside ordinary distortions.
+
+Provenance metadata (`--author`/`--copyright`) and manifest-style
+schemes like C2PA sidestep the pixel-robustness arms race entirely, but
+answer a different question — "does this exact file match something
+signed" rather than "is a mark still recoverable after edits" — so a
+full regeneration just produces an unsigned image rather than a false
+match, which is a different (arguably more honest) failure mode.
+
+Bottom line: treat every mechanism in this tool as raising the cost of
+casual removal, not as cryptographic proof against a determined,
+resourced remover — that's still an open research problem industry-wide,
+not a gap specific to this project.
 
 ## Video support
 
@@ -145,8 +213,11 @@ python3 cli/watermark.py input_folder/ output_folder/ --text "@yourhandle" \
 python3 cli/watermark.py input.jpg output.png --text "@yourhandle" \
     --blend multiply --invisible --author "Jane Doe" --copyright "(c) 2026 Jane Doe"
 
-# read back the invisible mark later
+# read back the invisible mark later (scans the whole image, not just one corner)
 python3 cli/extract_invisible.py output.png
+# --max-length caps how long a payload it will consider plausible while
+# scanning (default 10000 bytes); raise it only if you embedded something
+# longer than that with --invisible-text
 ```
 
 ### Options
