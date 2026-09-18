@@ -33,6 +33,14 @@ in principle be separated from the base image. The CLI addresses both:
   alpha-over, the mark mixes into the base image's own pixel values
   (`--ink` controls how strongly), so it can't be cleanly separated as its
   own layer. Applies to both images and video frames.
+  **Watch `--ink` with `--blend overlay`:** with the overlay formula used
+  here, `--ink 0.5` is the exact mathematical no-op — it leaves every pixel
+  unchanged, so the watermark is completely invisible, not just "medium
+  strength." This is easy to hit by accident if you assume 0.5 is a safe
+  middle value (it's the *0.32 default* that's a safe middle value). Stay
+  clearly above or below 0.5 for a visible mark. Multiply doesn't have this
+  trap in the middle of the range — there, smaller `--ink` means a darker
+  mark and the no-op point is instead at the top of the range (`--ink 1.0`).
 - **Invisible backup mark** (`--invisible`, images only) — a simple LSB
   (least significant bit) payload spread across the image, readable back
   with `cli/extract_invisible.py`. This is a lightweight fallback only — it
@@ -113,6 +121,16 @@ Bottom line: treat every mechanism in this tool as raising the cost of
 casual removal, not as cryptographic proof against a determined,
 resourced remover — that's still an open research problem industry-wide,
 not a gap specific to this project.
+
+## Known limitations
+
+- **Tile overlap at default jitter** — the per-tile position jitter (an
+  internal default of `create_watermark_layer` in `wmcore.py`, currently
+  ±0.35 of `--spacing`) is not yet exposed as its own CLI flag. Combined
+  with the default `--spacing 250`, tiles that land close together can
+  overlap slightly, which looks a bit busy in some regions of the image.
+  It's cosmetic, not a correctness bug — if it bothers you, increase
+  `--spacing` or shrink `--font-size` so tiles have more room.
 
 ## Video support
 

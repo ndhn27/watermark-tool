@@ -197,7 +197,13 @@ def main():
              "pickle-per-frame path (useful if shared memory isn't available in your environment)",
     )
     parser.add_argument("--blend", choices=["alpha", "multiply", "overlay"], default="alpha", help="How the mark mixes with the base image (default: alpha)")
-    parser.add_argument("--ink", type=float, default=0.32, help="Darkness of the mark for multiply/overlay blend, 0-1 (default: 0.32)")
+    parser.add_argument(
+        "--ink", type=float, default=0.32,
+        help="Darkness of the mark for multiply/overlay blend, 0-1 (default: 0.32). "
+             "For --blend overlay, 0.5 is the mathematical no-op point (the mark "
+             "becomes invisible) - stay clearly above or below 0.5. For multiply, "
+             "smaller values give a darker mark; 1.0 is the no-op point there instead.",
+    )
     parser.add_argument("--invisible", action="store_true", help="Also embed a hidden LSB backup mark (images only, save as PNG - JPEG destroys it)")
     parser.add_argument("--invisible-text", default=None, help="Text for the hidden mark, defaults to --text")
     parser.add_argument("--author", default=None, help="Author name to embed in EXIF/PNG metadata (images only)")

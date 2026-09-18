@@ -75,6 +75,18 @@ class TestOverlayMode:
         assert out.min() >= -1e-6
         assert out.max() <= 1 + 1e-6
 
+    def test_ink_half_is_a_no_op_even_at_full_alpha(self):
+        # ink=0.5 is the exact mathematical neutral point of this overlay
+        # formula for BOTH branches (base < 0.5 and base >= 0.5): the mark
+        # is fully invisible here, not just "medium strength". This is easy
+        # to hit by accident since 0.5 looks like a safe middle value -
+        # pin it down so a future formula change can't silently reintroduce
+        # (or accidentally remove) this behavior without a test noticing.
+        rng = np.random.RandomState(4)
+        base = rng.rand(8, 8, 3).astype(np.float32)
+        out = wmcore.blend_arrays(base, _flat(1.0, (8, 8, 1)), mode="overlay", ink=0.5)
+        np.testing.assert_allclose(out, base, atol=1e-6)
+
     def test_dark_pixel_darkens_light_pixel_lightens(self):
         # overlay: base < 0.5 branch scales toward 0 as ink shrinks; base >
         # 0.5 branch scales toward 1 as ink grows. Sanity-check the two
