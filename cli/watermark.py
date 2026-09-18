@@ -75,7 +75,6 @@ Setup:
 
 import argparse
 import os
-import zlib
 from concurrent.futures import ProcessPoolExecutor
 
 from PIL import Image
@@ -151,11 +150,9 @@ def _stable_file_seed(base_seed, fname):
     """Deterministic per-file seed offset for batches, so every file gets
     its own jitter pattern instead of an identical (and itself detectable)
     one, while still being reproducible run-to-run for a given --seed.
-    Uses crc32 rather than the built-in hash(): Python salts string hashing
-    per-process by default, which would silently break that reproducibility
-    guarantee.
+    Thin wrapper around wmcore.derive_seed() - see there for why crc32.
     """
-    return base_seed + (zlib.crc32(fname.encode("utf-8")) % 100000)
+    return wmcore.derive_seed(base_seed, fname)
 
 
 # ---------------------------------------------------------------------------
@@ -196,6 +193,17 @@ def main():
         help="Video only: disable the shared-memory frame transport and fall back to the slower "
              "pickle-per-frame path (useful if shared memory isn't available in your environment)",
     )
+    parser.add_argument(
+        "--jitter-refresh-seconds", type=float, default=4.0,
+        help="Video only: regenerate the watermark's jitter pattern (new random tile "
+             "positions/opacity/rotation) every N seconds of output instead of using one "
+             "static pattern for the whole clip (default: 4.0). A single unchanging pattern "
+             "stamped over moving footage is itself averageable out via a per-pixel median "
+             "across enough frames, the same collusion/averaging attack the README describes "
+             "for multiple images sharing a seed - just within one file instead of across "
+             "several. Pass 0 to disable and use one static pattern for the whole video "
+             "(old behavior; only meaningful with --seed set, for exact reproducibility).",
+    )
     parser.add_argument("--blend", choices=["alpha", "multiply", "overlay"], default="alpha", help="How the mark mixes with the base image (default: alpha)")
     parser.add_argument(
         "--ink", type=float, default=0.32,
@@ -219,7 +227,7 @@ def main():
     video_kwargs = dict(
         text=args.text, opacity=args.opacity, font_size=args.font_size, angle=args.angle,
         spacing=args.spacing, font_path=args.font_path, seed=args.seed, blend=args.blend, ink=args.ink,
-        use_shared_memory=args.use_shared_memory,
+        use_shared_memory=args.use_shared_memory, jitter_refresh_seconds=args.jitter_refresh_seconds,
     )
     workers = args.workers or os.cpu_count() or 1
 

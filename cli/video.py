@@ -4,10 +4,24 @@ video.py - Apply the same diagonal-grid watermark used for stills to video
 files, frame by frame, with the frame math parallelized across processes.
 
 Pipeline:
-  1. Build the watermark grid layer once, at the video's frame size (the
-     same create_watermark_layer() used for images - see wmcore.py). One
-     build, reused for every frame - a video is just a still grid stamped
-     onto a moving base.
+  1. Build the watermark grid layer at the video's frame size (the same
+     create_watermark_layer() used for images - see wmcore.py) - but NOT
+     just once for the whole file. The video is split into fixed-length
+     time segments (`jitter_refresh_seconds`, default a few seconds), and
+     each segment gets its own freshly-generated layer with its own jitter
+     seed (see `derive_seed` in wmcore.py). A single static layer reused
+     for the entire clip would itself be a collusion/averaging-attack
+     target - the base video content moves frame to frame but the mark
+     wouldn't, so simply taking the per-pixel median (or mean) across many
+     frames estimates that static pattern and lets it be subtracted, with
+     no need for multiple different files the way the README's threat
+     model otherwise assumes. Refreshing the pattern periodically means
+     that attack only ever gets to average over one segment's worth of
+     frames before the target changes underneath it. Pass
+     `jitter_refresh_seconds=0` to fall back to the old single-static-layer
+     behavior (e.g. for exact reproducibility with older output, or if
+     the per-segment worker-pool rebuild below is unwelcome overhead on a
+     short clip).
   2. Read frames sequentially from the source with OpenCV. Decoding stays
      single-threaded (cv2.VideoCapture isn't shareable across processes);
      that's fine, it's cheap next to the per-frame blend math.
@@ -15,6 +29,10 @@ Pipeline:
      watermark using the same blend_arrays() math as the image path, in a
      bounded pipeline (frames are submitted ahead of the writer so workers
      stay busy, but never more than a few batches ahead, to cap memory use).
+     The pool is rebuilt at each segment boundary (draining all frames from
+     the outgoing segment first) so workers pick up the new segment's mark
+     arrays - simpler and safer than mutating shared memory a worker might
+     be mid-read on, at the cost of a small pause every `jitter_refresh_seconds`.
   4. Stream the finished frames, in order, into an ffmpeg subprocess that
      re-encodes them to H.264 and muxes back the original audio track in
      one pass.
@@ -181,6 +199,13 @@ def _ffmpeg_encode_pipe(ffmpeg_bin, output_path, width, height, fps, audio_sourc
 # Pipeline
 # ---------------------------------------------------------------------------
 
+def _build_mark_arrays(size, text, font_size, opacity, angle, spacing, font_path, seed):
+    mark_layer = wmcore.create_watermark_layer(
+        size, text, font_size, opacity, angle, spacing, font_path, seed=seed
+    )
+    return wmcore.watermark_layer_to_arrays(mark_layer)
+
+
 def apply_watermark_video(
     input_path,
     output_path,
@@ -196,6 +221,7 @@ def apply_watermark_video(
     workers=None,
     show_progress=True,
     use_shared_memory=True,
+    jitter_refresh_seconds=4.0,
 ):
     cap = cv2.VideoCapture(input_path)
     if not cap.isOpened():
@@ -206,10 +232,17 @@ def apply_watermark_video(
     fps = cap.get(cv2.CAP_PROP_FPS) or 30.0
     frame_count = int(cap.get(cv2.CAP_PROP_FRAME_COUNT)) or None
 
-    mark_layer = wmcore.create_watermark_layer(
-        (width, height), text, font_size, opacity, angle, spacing, font_path, seed=seed
+    # frames_per_segment=None means "one segment for the whole video" - the
+    # old, static-mark behavior - when jitter_refresh_seconds is disabled.
+    if jitter_refresh_seconds and jitter_refresh_seconds > 0:
+        frames_per_segment = max(1, round(fps * jitter_refresh_seconds))
+    else:
+        frames_per_segment = None
+
+    mark_rgb01, mark_alpha01 = _build_mark_arrays(
+        (width, height), text, font_size, opacity, angle, spacing, font_path,
+        seed=wmcore.derive_seed(seed, 0) if frames_per_segment else seed,
     )
-    mark_rgb01, mark_alpha01 = wmcore.watermark_layer_to_arrays(mark_layer)
 
     ffmpeg_bin = shutil.which("ffmpeg")
     writer = None
@@ -244,24 +277,29 @@ def apply_watermark_video(
             in_shm = out_shm = in_arr = out_arr = None
 
     use_shm = in_arr is not None
-    if use_shm:
-        pool = ProcessPoolExecutor(
-            max_workers=workers,
-            initializer=_init_worker_shm,
-            initargs=(
-                mark_rgb01.tobytes(), mark_alpha01.tobytes(), (height, width), blend, ink,
-                in_shm.name, out_shm.name, max_in_flight,
-            ),
-        )
-    else:
-        pool = ProcessPoolExecutor(
+
+    def _make_pool(mrgb, malpha):
+        if use_shm:
+            return ProcessPoolExecutor(
+                max_workers=workers,
+                initializer=_init_worker_shm,
+                initargs=(
+                    mrgb.tobytes(), malpha.tobytes(), (height, width), blend, ink,
+                    in_shm.name, out_shm.name, max_in_flight,
+                ),
+            )
+        return ProcessPoolExecutor(
             max_workers=workers,
             initializer=_init_worker_pickle,
-            initargs=(mark_rgb01.tobytes(), mark_alpha01.tobytes(), (height, width), blend, ink),
+            initargs=(mrgb.tobytes(), malpha.tobytes(), (height, width), blend, ink),
         )
+
+    pool = _make_pool(mark_rgb01, mark_alpha01)
 
     pending = deque()  # (slot_or_None, future)
     next_slot = 0
+    segment_index = 0
+    frames_in_segment = 0
     progress = tqdm(total=frame_count, desc=os.path.basename(input_path), unit="frame", disable=not show_progress)
 
     def _drain_one():
@@ -284,6 +322,24 @@ def apply_watermark_video(
 
     try:
         while True:
+            if frames_per_segment is not None and frames_in_segment >= frames_per_segment:
+                # Segment boundary: finish every frame still in flight under
+                # the OLD mark before workers ever see the new one, then
+                # swap pools. This keeps the two segments' patterns from
+                # ever blending mid-frame - simpler to reason about than
+                # having a worker mid-read on mark data another process is
+                # concurrently rewriting.
+                while pending:
+                    _drain_one()
+                pool.shutdown(wait=True)
+                segment_index += 1
+                mark_rgb01, mark_alpha01 = _build_mark_arrays(
+                    (width, height), text, font_size, opacity, angle, spacing, font_path,
+                    seed=wmcore.derive_seed(seed, segment_index),
+                )
+                pool = _make_pool(mark_rgb01, mark_alpha01)
+                frames_in_segment = 0
+
             ok, frame = cap.read()
             if not ok:
                 break
@@ -294,6 +350,7 @@ def apply_watermark_video(
                 pending.append((slot, pool.submit(_process_frame_shm, slot)))
             else:
                 pending.append((None, pool.submit(_process_frame_pickle, frame.tobytes(), frame.shape)))
+            frames_in_segment += 1
             if len(pending) >= max_in_flight:
                 _drain_one()
         while pending:

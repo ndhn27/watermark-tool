@@ -29,6 +29,15 @@ in principle be separated from the base image. The CLI addresses both:
   opacity, and rotation, derived from `--seed` (reuse the same seed to
   reproduce an identical pattern; omit it for a fresh one each run). This
   breaks the grid's periodicity so it's much harder to model out.
+  **Video gets this refreshed over time, too** (`--jitter-refresh-seconds`,
+  default `4.0`): the jitter pattern is regenerated every N seconds of
+  output instead of one static pattern for the whole clip. A single
+  unchanging mark stamped over moving footage is itself a collusion/
+  averaging-attack target — the base content moves frame to frame but the
+  mark wouldn't, so a per-pixel median across enough frames estimates and
+  subtracts it, no *separate* files required the way the paragraph below
+  otherwise assumes. Pass `0` to opt back into one static pattern for the
+  whole video (only useful for exact reproducibility with older output).
 - **Blend modes** (`--blend multiply|overlay`) — instead of a flat
   alpha-over, the mark mixes into the base image's own pixel values
   (`--ink` controls how strongly), so it can't be cleanly separated as its
@@ -57,6 +66,17 @@ in principle be separated from the base image. The CLI addresses both:
   can break up individual repeats even when some survive), it may still
   fall back to a single uncorroborated match rather than reporting
   nothing.
+  **Possible future layer:** a frequency-domain mark (DCT/DWT) or
+  spread-spectrum embedding (payload spread across many frequency
+  coefficients rather than concentrated in one channel's low bits) would
+  address LSB's core weakness here — surviving recompression/resize — and
+  would sit in a genuinely different domain from the pixel-space grid and
+  LSB payload already in this tool, so defeating all three cleanly would
+  take breaking each independently rather than one shared trick. Not
+  attempted yet: it's a substantially larger undertaking than anything
+  else in this list (real DCT/DWT or spread-spectrum watermarking is
+  usually its own research-grade project, not a quick addition), so it's
+  left here as a direction rather than implemented.
 - **Provenance metadata** (`--author`, `--copyright`, images only) —
   written into real EXIF (JPEG, via `piexif`) or PNG text chunks, so tools
   that read standard metadata see attribution even without looking at the
@@ -258,6 +278,7 @@ python3 cli/extract_invisible.py output.png
 | `--author` | — | Author name, embedded in EXIF/PNG metadata (images only) |
 | `--copyright` | — | Copyright string, embedded in EXIF/PNG metadata (images only) |
 | `--no-shared-memory` | off | Video only: disable the shared-memory frame transport, fall back to a slower pickle-per-frame path (useful if shared memory isn't available in your environment, e.g. some sandboxes without `/dev/shm`) |
+| `--jitter-refresh-seconds` | `4.0` | Video only: regenerate the jitter pattern every N seconds of output (rebuilds the worker pool at each boundary). `0` disables this and uses one static pattern for the whole clip — see the per-tile-jitter section above for why that's weaker |
 
 ## Project structure
 

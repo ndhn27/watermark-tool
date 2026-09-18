@@ -18,6 +18,7 @@ reasons:
 import math
 import os
 import random
+import zlib
 
 import numpy as np
 from PIL import Image, ImageDraw, ImageFont, PngImagePlugin
@@ -71,6 +72,24 @@ def load_font(font_size, font_path=None):
         )
         _font_fallback_warned = True
     return ImageFont.load_default()
+
+
+def derive_seed(base_seed, key):
+    """Deterministically derive a distinct-but-reproducible seed from a base
+    seed and a key (a filename, a video segment index, etc.), so several
+    items sharing one base seed each get their own jitter pattern instead of
+    an identical one - which would itself be a single static pattern an
+    attacker could average/median out across those items. Returns None
+    unchanged when base_seed is None, preserving "fresh randomness every
+    run" for callers who never pinned a seed to begin with.
+
+    Uses crc32 rather than the built-in hash(): Python salts string hashing
+    per-process by default, which would silently break run-to-run
+    reproducibility for a given base_seed.
+    """
+    if base_seed is None:
+        return None
+    return base_seed + (zlib.crc32(str(key).encode("utf-8")) % 100000)
 
 
 # ---------------------------------------------------------------------------
