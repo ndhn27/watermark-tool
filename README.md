@@ -38,6 +38,16 @@ in principle be separated from the base image. The CLI addresses both:
   subtracts it, no *separate* files required the way the paragraph below
   otherwise assumes. Pass `0` to opt back into one static pattern for the
   whole video (only useful for exact reproducibility with older output).
+  **Performance note:** each refresh rebuilds the whole worker pool, which
+  has a real, roughly fixed cost per rebuild — so a short interval adds up
+  fast on a short clip (rebuild overhead is a bigger fraction of total
+  runtime) and gets worse with more `--workers` (more worker processes to
+  spawn each time). Measured on one machine: a 6s clip took 1.82s at the
+  `4.0` default vs. 6.29s at `0.3` (~3.5x); the tool prints a note if you
+  set it under 1 second. Benchmark your own setup before committing to a
+  very short interval for a long/production run, and only go that short if
+  your threat model genuinely calls for defending against an adversary who
+  can median/average frames over a window that narrow.
 - **Blend modes** (`--blend multiply|overlay`) — instead of a flat
   alpha-over, the mark mixes into the base image's own pixel values
   (`--ink` controls how strongly), so it can't be cleanly separated as its
@@ -278,7 +288,7 @@ python3 cli/extract_invisible.py output.png
 | `--author` | — | Author name, embedded in EXIF/PNG metadata (images only) |
 | `--copyright` | — | Copyright string, embedded in EXIF/PNG metadata (images only) |
 | `--no-shared-memory` | off | Video only: disable the shared-memory frame transport, fall back to a slower pickle-per-frame path (useful if shared memory isn't available in your environment, e.g. some sandboxes without `/dev/shm`) |
-| `--jitter-refresh-seconds` | `4.0` | Video only: regenerate the jitter pattern every N seconds of output (rebuilds the worker pool at each boundary). `0` disables this and uses one static pattern for the whole clip — see the per-tile-jitter section above for why that's weaker |
+| `--jitter-refresh-seconds` | `4.0` | Video only: regenerate the jitter pattern every N seconds of output (rebuilds the worker pool at each boundary — see note below). `0` disables this and uses one static pattern for the whole clip — see the per-tile-jitter section above for why that's weaker |
 
 ## Project structure
 

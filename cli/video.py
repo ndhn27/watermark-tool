@@ -97,6 +97,9 @@ except ImportError:
         return _NullProgress(total)
 
 
+_short_refresh_warned = False  # print the short-refresh-interval note at most once per process
+
+
 # ---------------------------------------------------------------------------
 # Per-frame worker (runs in a separate process - see wmcore.py's module
 # docstring for why this can't be a closure or live in the __main__ script)
@@ -232,12 +235,27 @@ def apply_watermark_video(
     fps = cap.get(cv2.CAP_PROP_FPS) or 30.0
     frame_count = int(cap.get(cv2.CAP_PROP_FRAME_COUNT)) or None
 
+    workers = workers or os.cpu_count() or 1
+
     # frames_per_segment=None means "one segment for the whole video" - the
     # old, static-mark behavior - when jitter_refresh_seconds is disabled.
     if jitter_refresh_seconds and jitter_refresh_seconds > 0:
         frames_per_segment = max(1, round(fps * jitter_refresh_seconds))
     else:
         frames_per_segment = None
+
+    global _short_refresh_warned
+    if frames_per_segment is not None and jitter_refresh_seconds < 1.0 and not _short_refresh_warned:
+        print(
+            f"Note: --jitter-refresh-seconds {jitter_refresh_seconds:g} rebuilds the worker "
+            f"pool very often (every ~{frames_per_segment} frames here). Each rebuild has a "
+            f"real, roughly fixed cost that gets worse with more --workers (currently {workers}) "
+            "and matters more on short clips, where rebuild overhead is a bigger fraction of "
+            "total runtime. Benchmark on your own machine before committing to sub-1s refresh "
+            "for a long/production run - and only go this short if you actually need to defend "
+            "against an adversary who can median/average frames over a window that narrow."
+        )
+        _short_refresh_warned = True
 
     mark_rgb01, mark_alpha01 = _build_mark_arrays(
         (width, height), text, font_size, opacity, angle, spacing, font_path,
@@ -258,7 +276,6 @@ def apply_watermark_video(
         fourcc = cv2.VideoWriter_fourcc(*"mp4v")
         writer = cv2.VideoWriter(output_path, fourcc, fps, (width, height))
 
-    workers = workers or os.cpu_count() or 1
     max_in_flight = max(workers * 4, 4)
 
     in_shm = out_shm = in_arr = out_arr = None
