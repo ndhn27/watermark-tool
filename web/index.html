@@ -15,6 +15,7 @@
     --accent: #cf9a4c;
     --accent-strong: #e3b567;
     --accent-dim: rgba(207, 154, 76, 0.16);
+    --good: #7cc48a;
     --mono: ui-monospace, "SFMono-Regular", "Cascadia Code", Consolas, "Liberation Mono", monospace;
     --sans: -apple-system, BlinkMacSystemFont, "Segoe UI", "Malgun Gothic", "Apple SD Gothic Neo", Roboto, sans-serif;
   }
@@ -38,7 +39,10 @@
   .topbar {
     display: flex;
     align-items: center;
+    justify-content: space-between;
     margin-bottom: 28px;
+    gap: 12px;
+    flex-wrap: wrap;
   }
 
   .brand { display: flex; align-items: center; gap: 14px; }
@@ -70,6 +74,17 @@
     letter-spacing: 0.08em;
     color: var(--text-dim);
   }
+
+  .count-pill {
+    font-family: var(--mono);
+    font-size: 11.5px;
+    color: var(--text-dim);
+    border: 1px solid var(--border);
+    border-radius: 999px;
+    padding: 6px 12px;
+  }
+
+  .count-pill strong { color: var(--accent-strong); font-weight: 600; }
 
   .layout {
     display: grid;
@@ -223,6 +238,18 @@
     cursor: not-allowed;
   }
 
+  .ghost-btn {
+    background: none;
+    border: 1px solid var(--border);
+    color: var(--text);
+    border-radius: 6px;
+    padding: 10px 12px;
+    font-size: 13px;
+    cursor: pointer;
+  }
+
+  .ghost-btn:disabled { color: var(--text-dim); cursor: not-allowed; }
+
   .hint {
     margin: 0;
     font-size: 11.5px;
@@ -242,7 +269,9 @@
 
   .preview-toolbar {
     display: flex;
-    justify-content: flex-end;
+    justify-content: space-between;
+    align-items: center;
+    gap: 10px;
   }
 
   .text-btn {
@@ -253,6 +282,66 @@
     cursor: pointer;
     font-family: var(--mono);
   }
+
+  /* Thumbnail rail (batch) */
+  .thumb-rail {
+    display: flex;
+    gap: 8px;
+    overflow-x: auto;
+    padding: 2px 2px 8px;
+  }
+
+  .thumb {
+    position: relative;
+    flex-shrink: 0;
+    width: 64px;
+    height: 64px;
+    border-radius: 6px;
+    border: 2px solid var(--border);
+    overflow: hidden;
+    cursor: pointer;
+    background: var(--panel-2);
+  }
+
+  .thumb.active { border-color: var(--accent); }
+
+  .thumb img {
+    width: 100%;
+    height: 100%;
+    object-fit: cover;
+    display: block;
+  }
+
+  .thumb-remove {
+    position: absolute;
+    top: 2px;
+    right: 2px;
+    width: 18px;
+    height: 18px;
+    line-height: 16px;
+    text-align: center;
+    background: rgba(18, 21, 29, 0.85);
+    color: var(--text);
+    border: none;
+    border-radius: 4px;
+    font-size: 12px;
+    cursor: pointer;
+    padding: 0;
+  }
+
+  .thumb-add {
+    flex-shrink: 0;
+    width: 64px;
+    height: 64px;
+    border-radius: 6px;
+    border: 1px dashed var(--border);
+    background: none;
+    color: var(--text-dim);
+    font-size: 22px;
+    cursor: pointer;
+  }
+
+  .thumb-add:hover { border-color: var(--accent); color: var(--accent-strong); }
 
   .dropzone {
     background: var(--panel);
@@ -333,6 +422,37 @@
   .meta-strip .dot { color: var(--border); }
   .meta-strip span:not(.dot) { color: var(--text-dim); }
   #meta-res, #meta-format { color: var(--accent-strong); }
+
+  .batch-actions {
+    display: flex;
+    gap: 8px;
+    margin-top: 4px;
+  }
+
+  .batch-actions .primary-btn,
+  .batch-actions .ghost-btn { flex: 1; margin-top: 0; }
+
+  .progress-track {
+    height: 6px;
+    border-radius: 3px;
+    background: var(--panel-2);
+    border: 1px solid var(--border);
+    overflow: hidden;
+  }
+
+  .progress-fill {
+    height: 100%;
+    width: 0%;
+    background: var(--accent);
+    transition: width 0.12s ease;
+  }
+
+  .progress-label {
+    font-family: var(--mono);
+    font-size: 11px;
+    color: var(--text-dim);
+    text-align: center;
+  }
 </style>
 </head>
 <body>
@@ -345,6 +465,7 @@
           <p class="eyebrow">IMAGE WATERMARKING · RESOLUTION PRESERVED</p>
         </div>
       </div>
+      <span class="count-pill" id="count-pill" hidden><strong id="count-value">0</strong> image(s) loaded</span>
     </header>
 
     <main class="layout">
@@ -404,21 +525,32 @@
           </div>
         </div>
 
-        <button id="download-btn" class="primary-btn" disabled>Download image</button>
-        <p class="hint" id="download-hint">Choose an image to start</p>
-        <p class="footnote">Everything runs locally in your browser — images are never uploaded to any server.</p>
+        <div class="batch-actions">
+          <button id="download-btn" class="primary-btn" disabled>Download this image</button>
+        </div>
+        <div class="batch-actions">
+          <button id="download-all-btn" class="ghost-btn" disabled>Download all as .zip</button>
+        </div>
+
+        <div id="progress-wrap" hidden>
+          <div class="progress-track"><div class="progress-fill" id="progress-fill"></div></div>
+          <p class="progress-label" id="progress-label">Processing…</p>
+        </div>
+
+        <p class="hint" id="download-hint">Choose one or more images to start</p>
+        <p class="footnote">Everything runs locally in your browser — images are never uploaded to any server. Same settings are applied to every loaded image.</p>
       </aside>
 
       <section class="preview-wrap">
         <div class="preview-toolbar" id="preview-toolbar" hidden>
-          <button type="button" id="change-btn" class="text-btn">Change image</button>
+          <div class="thumb-rail" id="thumb-rail"></div>
         </div>
         <div id="dropzone" class="dropzone">
-          <input id="file-input" type="file" accept="image/*" hidden />
+          <input id="file-input" type="file" accept="image/*" multiple hidden />
           <div class="dropzone-empty" id="dropzone-empty">
-            <p>Drag an image here</p>
+            <p>Drag one or more images here</p>
             <p class="or">or</p>
-            <button type="button" id="browse-btn" class="secondary-btn">Choose image file</button>
+            <button type="button" id="browse-btn" class="secondary-btn">Choose image files</button>
           </div>
           <div class="canvas-frame" id="canvas-frame" hidden>
             <span class="corner tl"></span>
@@ -441,10 +573,113 @@
 
 <script>
 (function () {
+  // ---------------------------------------------------------------------
+  // Minimal ZIP writer (STORE / no compression) - kept in-page rather than
+  // pulled from a library, to match this tool's single-file, no-build,
+  // nothing-leaves-the-browser design.
+  // ---------------------------------------------------------------------
+  const CRC_TABLE = (() => {
+    const table = new Uint32Array(256);
+    for (let n = 0; n < 256; n++) {
+      let c = n;
+      for (let k = 0; k < 8; k++) c = (c & 1) ? (0xEDB88320 ^ (c >>> 1)) : (c >>> 1);
+      table[n] = c >>> 0;
+    }
+    return table;
+  })();
+
+  function crc32(bytes) {
+    let c = 0xFFFFFFFF;
+    for (let i = 0; i < bytes.length; i++) c = CRC_TABLE[(c ^ bytes[i]) & 0xFF] ^ (c >>> 8);
+    return (c ^ 0xFFFFFFFF) >>> 0;
+  }
+
+  function dosDateTime(date) {
+    const time = ((date.getHours() & 0x1F) << 11) | ((date.getMinutes() & 0x3F) << 5) | ((date.getSeconds() >> 1) & 0x1F);
+    const day = (((date.getFullYear() - 1980) & 0x7F) << 9) | (((date.getMonth() + 1) & 0xF) << 5) | (date.getDate() & 0x1F);
+    return { time, day };
+  }
+
+  function writeUint32LE(view, offset, value) { view.setUint32(offset, value, true); }
+  function writeUint16LE(view, offset, value) { view.setUint16(offset, value, true); }
+
+  // files: [{ name: string, data: Uint8Array }]
+  function buildZip(files) {
+    const { time, day } = dosDateTime(new Date());
+    const encoder = new TextEncoder();
+    const localParts = [];
+    const centralParts = [];
+    let offset = 0;
+
+    for (const f of files) {
+      const nameBytes = encoder.encode(f.name);
+      const crc = crc32(f.data);
+      const size = f.data.length;
+
+      const localHeader = new DataView(new ArrayBuffer(30));
+      writeUint32LE(localHeader, 0, 0x04034b50);
+      writeUint16LE(localHeader, 4, 20);
+      writeUint16LE(localHeader, 6, 0x0800); // bit 11: filename is UTF-8
+      writeUint16LE(localHeader, 8, 0); // store, no compression
+      writeUint16LE(localHeader, 10, time);
+      writeUint16LE(localHeader, 12, day);
+      writeUint32LE(localHeader, 14, crc);
+      writeUint32LE(localHeader, 18, size);
+      writeUint32LE(localHeader, 22, size);
+      writeUint16LE(localHeader, 26, nameBytes.length);
+      writeUint16LE(localHeader, 28, 0);
+
+      localParts.push(new Uint8Array(localHeader.buffer), nameBytes, f.data);
+
+      const centralHeader = new DataView(new ArrayBuffer(46));
+      writeUint32LE(centralHeader, 0, 0x02014b50);
+      writeUint16LE(centralHeader, 4, 20);
+      writeUint16LE(centralHeader, 6, 20);
+      writeUint16LE(centralHeader, 8, 0x0800); // bit 11: filename is UTF-8
+      writeUint16LE(centralHeader, 10, 0);
+      writeUint16LE(centralHeader, 12, time);
+      writeUint16LE(centralHeader, 14, day);
+      writeUint32LE(centralHeader, 16, crc);
+      writeUint32LE(centralHeader, 20, size);
+      writeUint32LE(centralHeader, 24, size);
+      writeUint16LE(centralHeader, 28, nameBytes.length);
+      writeUint16LE(centralHeader, 30, 0);
+      writeUint16LE(centralHeader, 32, 0);
+      writeUint16LE(centralHeader, 34, 0);
+      writeUint16LE(centralHeader, 36, 0);
+      writeUint32LE(centralHeader, 38, 0);
+      writeUint32LE(centralHeader, 42, offset);
+
+      centralParts.push(new Uint8Array(centralHeader.buffer), nameBytes);
+
+      offset += 30 + nameBytes.length + size;
+    }
+
+    const centralStart = offset;
+    let centralSize = 0;
+    for (const p of centralParts) centralSize += p.length;
+
+    const end = new DataView(new ArrayBuffer(22));
+    writeUint32LE(end, 0, 0x06054b50);
+    writeUint16LE(end, 4, 0);
+    writeUint16LE(end, 6, 0);
+    writeUint16LE(end, 8, files.length);
+    writeUint16LE(end, 10, files.length);
+    writeUint32LE(end, 12, centralSize);
+    writeUint32LE(end, 16, centralStart);
+    writeUint16LE(end, 20, 0);
+
+    const allParts = [...localParts, ...centralParts, new Uint8Array(end.buffer)];
+    return new Blob(allParts, { type: "application/zip" });
+  }
+
+  // ---------------------------------------------------------------------
+  // App state
+  // ---------------------------------------------------------------------
   const fileInput = document.getElementById('file-input');
   const browseBtn = document.getElementById('browse-btn');
-  const changeBtn = document.getElementById('change-btn');
   const previewToolbar = document.getElementById('preview-toolbar');
+  const thumbRail = document.getElementById('thumb-rail');
   const dropzone = document.getElementById('dropzone');
   const dropzoneEmpty = document.getElementById('dropzone-empty');
   const canvasFrame = document.getElementById('canvas-frame');
@@ -453,6 +688,8 @@
   const metaStrip = document.getElementById('meta-strip');
   const metaRes = document.getElementById('meta-res');
   const metaFormat = document.getElementById('meta-format');
+  const countPill = document.getElementById('count-pill');
+  const countValue = document.getElementById('count-value');
 
   const textInput = document.getElementById('wm-text');
   const opacityInput = document.getElementById('wm-opacity');
@@ -466,23 +703,39 @@
   const angleValue = document.getElementById('angle-value');
 
   const downloadBtn = document.getElementById('download-btn');
+  const downloadAllBtn = document.getElementById('download-all-btn');
   const downloadHint = document.getElementById('download-hint');
   const segButtons = document.querySelectorAll('.seg-btn');
   const swatches = document.querySelectorAll('.swatch');
 
-  let originalImage = null;
-  let originalName = 'image';
+  const progressWrap = document.getElementById('progress-wrap');
+  const progressFill = document.getElementById('progress-fill');
+  const progressLabel = document.getElementById('progress-label');
+
+  let images = [];        // { id, name, img (HTMLImageElement), thumbEl }
+  let activeId = null;
   let outputFormat = 'png';
   let currentColor = '#ffffff';
   let rafPending = false;
+  let nextId = 1;
+  let busy = false;
 
   function hexToRgb(hex) {
     const n = parseInt(hex.replace('#', ''), 16);
     return [(n >> 16) & 255, (n >> 8) & 255, n & 255];
   }
 
+  function activeEntry() {
+    return images.find((e) => e.id === activeId) || null;
+  }
+
+  function updateCountPill() {
+    countValue.textContent = images.length;
+    countPill.hidden = images.length === 0;
+  }
+
   function scheduleRedraw() {
-    if (!originalImage || rafPending) return;
+    if (!activeEntry() || rafPending) return;
     rafPending = true;
     requestAnimationFrame(() => { rafPending = false; redraw(); });
   }
@@ -510,14 +763,15 @@
     ctx.restore();
   }
 
-  function redraw() {
-    if (!originalImage) return;
+  function redrawFor(imgEl) {
+    canvas.width = imgEl.naturalWidth;
+    canvas.height = imgEl.naturalHeight;
     ctx.clearRect(0, 0, canvas.width, canvas.height);
     if (outputFormat === 'jpeg') {
       ctx.fillStyle = '#ffffff';
       ctx.fillRect(0, 0, canvas.width, canvas.height);
     }
-    ctx.drawImage(originalImage, 0, 0, canvas.width, canvas.height);
+    ctx.drawImage(imgEl, 0, 0, canvas.width, canvas.height);
     drawWatermarkGrid(
       canvas.width,
       canvas.height,
@@ -530,34 +784,102 @@
     );
   }
 
-  function loadFile(file) {
-    if (!file || !file.type.startsWith('image/')) return;
-    originalName = file.name.replace(/\.[^.]+$/, '') || 'image';
-    const reader = new FileReader();
-    reader.onload = (e) => {
-      const img = new Image();
-      img.onload = () => {
-        originalImage = img;
-        canvas.width = img.naturalWidth;
-        canvas.height = img.naturalHeight;
-        dropzoneEmpty.hidden = true;
-        canvasFrame.hidden = false;
-        metaStrip.hidden = false;
-        previewToolbar.hidden = false;
-        metaRes.textContent = img.naturalWidth + ' × ' + img.naturalHeight + 'px';
-        metaFormat.textContent = outputFormat.toUpperCase();
-        downloadBtn.disabled = false;
-        downloadHint.textContent = 'Matches the original ' + img.naturalWidth + '×' + img.naturalHeight + 'px resolution';
-        redraw();
+  function redraw() {
+    const entry = activeEntry();
+    if (!entry) return;
+    redrawFor(entry.img);
+    metaRes.textContent = entry.img.naturalWidth + ' × ' + entry.img.naturalHeight + 'px';
+    metaFormat.textContent = outputFormat.toUpperCase();
+    downloadHint.textContent = 'Matches the original ' + entry.img.naturalWidth + '×' + entry.img.naturalHeight + 'px resolution';
+  }
+
+  function setActive(id) {
+    activeId = id;
+    document.querySelectorAll('.thumb').forEach((t) => t.classList.toggle('active', Number(t.dataset.id) === id));
+    redraw();
+  }
+
+  function addThumb(entry) {
+    const thumb = document.createElement('div');
+    thumb.className = 'thumb';
+    thumb.dataset.id = String(entry.id);
+    const img = document.createElement('img');
+    img.src = entry.img.src;
+    const remove = document.createElement('button');
+    remove.type = 'button';
+    remove.className = 'thumb-remove';
+    remove.textContent = '×';
+    remove.title = 'Remove';
+    remove.addEventListener('click', (e) => {
+      e.stopPropagation();
+      removeImage(entry.id);
+    });
+    thumb.appendChild(img);
+    thumb.appendChild(remove);
+    thumb.addEventListener('click', () => setActive(entry.id));
+    entry.thumbEl = thumb;
+    thumbRail.insertBefore(thumb, document.getElementById('thumb-add-btn'));
+  }
+
+  function removeImage(id) {
+    const idx = images.findIndex((e) => e.id === id);
+    if (idx === -1) return;
+    images[idx].thumbEl.remove();
+    images.splice(idx, 1);
+    updateCountPill();
+
+    if (images.length === 0) {
+      activeId = null;
+      dropzoneEmpty.hidden = false;
+      canvasFrame.hidden = true;
+      metaStrip.hidden = true;
+      previewToolbar.hidden = true;
+      downloadBtn.disabled = true;
+      downloadAllBtn.disabled = true;
+      downloadHint.textContent = 'Choose one or more images to start';
+      return;
+    }
+    if (activeId === id) setActive(images[Math.max(0, idx - 1)].id);
+  }
+
+  function addFiles(fileList) {
+    const files = Array.from(fileList || []).filter((f) => f.type.startsWith('image/'));
+    if (!files.length) return;
+
+    let firstNewId = null;
+    let remaining = files.length;
+
+    files.forEach((file) => {
+      const name = file.name.replace(/\.[^.]+$/, '') || 'image';
+      const reader = new FileReader();
+      reader.onload = (e) => {
+        const img = new Image();
+        img.onload = () => {
+          const entry = { id: nextId++, name, img };
+          images.push(entry);
+          addThumb(entry);
+          if (firstNewId === null) firstNewId = entry.id;
+
+          remaining -= 1;
+          if (remaining === 0) {
+            dropzoneEmpty.hidden = true;
+            canvasFrame.hidden = false;
+            metaStrip.hidden = false;
+            previewToolbar.hidden = false;
+            downloadBtn.disabled = false;
+            downloadAllBtn.disabled = images.length < 1;
+            updateCountPill();
+            setActive(activeId === null ? firstNewId : activeId);
+          }
+        };
+        img.src = e.target.result;
       };
-      img.src = e.target.result;
-    };
-    reader.readAsDataURL(file);
+      reader.readAsDataURL(file);
+    });
   }
 
   browseBtn.addEventListener('click', () => fileInput.click());
-  changeBtn.addEventListener('click', () => fileInput.click());
-  fileInput.addEventListener('change', (e) => loadFile(e.target.files[0]));
+  fileInput.addEventListener('change', (e) => { addFiles(e.target.files); fileInput.value = ''; });
 
   ['dragenter', 'dragover'].forEach((evt) => {
     dropzone.addEventListener(evt, (e) => {
@@ -571,10 +893,17 @@
       dropzone.classList.remove('drag-over');
     });
   });
-  dropzone.addEventListener('drop', (e) => {
-    const file = e.dataTransfer.files && e.dataTransfer.files[0];
-    loadFile(file);
-  });
+  dropzone.addEventListener('drop', (e) => addFiles(e.dataTransfer.files));
+
+  // "Add more" tile at the end of the thumbnail rail
+  const addBtn = document.createElement('button');
+  addBtn.type = 'button';
+  addBtn.id = 'thumb-add-btn';
+  addBtn.className = 'thumb-add';
+  addBtn.title = 'Add more images';
+  addBtn.textContent = '+';
+  addBtn.addEventListener('click', () => fileInput.click());
+  thumbRail.appendChild(addBtn);
 
   textInput.addEventListener('input', scheduleRedraw);
 
@@ -614,22 +943,75 @@
     });
   });
 
-  downloadBtn.addEventListener('click', () => {
-    if (!originalImage) return;
+  function canvasToBlob(mime, quality) {
+    return new Promise((resolve) => canvas.toBlob(resolve, mime, quality));
+  }
+
+  function triggerDownload(blob, filename) {
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = filename;
+    document.body.appendChild(a);
+    a.click();
+    a.remove();
+    URL.revokeObjectURL(url);
+  }
+
+  downloadBtn.addEventListener('click', async () => {
+    const entry = activeEntry();
+    if (!entry) return;
     const mime = outputFormat === 'jpeg' ? 'image/jpeg' : 'image/png';
     const ext = outputFormat === 'jpeg' ? 'jpg' : 'png';
     const quality = outputFormat === 'jpeg' ? 0.98 : undefined;
-    canvas.toBlob((blob) => {
-      if (!blob) return;
-      const url = URL.createObjectURL(blob);
-      const a = document.createElement('a');
-      a.href = url;
-      a.download = originalName + '_watermark.' + ext;
-      document.body.appendChild(a);
-      a.click();
-      a.remove();
-      URL.revokeObjectURL(url);
-    }, mime, quality);
+    redrawFor(entry.img);
+    const blob = await canvasToBlob(mime, quality);
+    if (blob) triggerDownload(blob, entry.name + '_watermark.' + ext);
+  });
+
+  downloadAllBtn.addEventListener('click', async () => {
+    if (busy || images.length === 0) return;
+    busy = true;
+    downloadBtn.disabled = true;
+    downloadAllBtn.disabled = true;
+    progressWrap.hidden = false;
+
+    const mime = outputFormat === 'jpeg' ? 'image/jpeg' : 'image/png';
+    const ext = outputFormat === 'jpeg' ? 'jpg' : 'png';
+    const quality = outputFormat === 'jpeg' ? 0.98 : undefined;
+    const zipFiles = [];
+    const usedNames = new Set();
+
+    for (let i = 0; i < images.length; i++) {
+      const entry = images[i];
+      progressLabel.textContent = `Processing ${i + 1} / ${images.length} — ${entry.name}`;
+      progressFill.style.width = Math.round(((i) / images.length) * 100) + '%';
+      // yield so the progress bar actually paints between images
+      await new Promise((r) => setTimeout(r, 0));
+
+      redrawFor(entry.img);
+      const blob = await canvasToBlob(mime, quality);
+      const data = new Uint8Array(await blob.arrayBuffer());
+
+      let name = entry.name + '_watermark.' + ext;
+      let n = 2;
+      while (usedNames.has(name)) { name = entry.name + '_watermark_' + n + '.' + ext; n++; }
+      usedNames.add(name);
+      zipFiles.push({ name, data });
+
+      progressFill.style.width = Math.round(((i + 1) / images.length) * 100) + '%';
+    }
+
+    progressLabel.textContent = 'Building .zip…';
+    await new Promise((r) => setTimeout(r, 0));
+    const zipBlob = buildZip(zipFiles);
+    triggerDownload(zipBlob, 'watermarked_images.zip');
+
+    progressWrap.hidden = true;
+    downloadBtn.disabled = false;
+    downloadAllBtn.disabled = false;
+    busy = false;
+    redraw(); // restore the visible preview to the active image
   });
 })();
 </script>
