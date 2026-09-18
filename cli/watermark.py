@@ -191,6 +191,11 @@ def main():
         help="Parallel workers: files-in-parallel for --batch images, frames-in-parallel for a video (default: CPU count)",
     )
     parser.add_argument("--seed", type=int, default=None, help="Random seed for tile jitter (reuse it to reproduce the same pattern)")
+    parser.add_argument(
+        "--no-shared-memory", dest="use_shared_memory", action="store_false",
+        help="Video only: disable the shared-memory frame transport and fall back to the slower "
+             "pickle-per-frame path (useful if shared memory isn't available in your environment)",
+    )
     parser.add_argument("--blend", choices=["alpha", "multiply", "overlay"], default="alpha", help="How the mark mixes with the base image (default: alpha)")
     parser.add_argument("--ink", type=float, default=0.32, help="Darkness of the mark for multiply/overlay blend, 0-1 (default: 0.32)")
     parser.add_argument("--invisible", action="store_true", help="Also embed a hidden LSB backup mark (images only, save as PNG - JPEG destroys it)")
@@ -208,6 +213,7 @@ def main():
     video_kwargs = dict(
         text=args.text, opacity=args.opacity, font_size=args.font_size, angle=args.angle,
         spacing=args.spacing, font_path=args.font_path, seed=args.seed, blend=args.blend, ink=args.ink,
+        use_shared_memory=args.use_shared_memory,
     )
     workers = args.workers or os.cpu_count() or 1
 

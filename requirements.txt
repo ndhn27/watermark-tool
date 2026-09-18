@@ -1,5 +1,11 @@
 Pillow>=10.0.0
 numpy>=1.24.0
-piexif>=1.1.3
 opencv-python-headless>=4.9.0
 tqdm>=4.66.0
+
+# Optional: only used for --author/--copyright EXIF metadata on JPEG output
+# (wmcore.py imports it in a try/except and degrades gracefully - with just a
+# printed note - if it's missing; PNG metadata does not need it at all).
+# Listed here anyway so `pip install -r requirements.txt` "just works" for
+# everyone; if you want to skip it, install the other 4 packages by hand.
+piexif>=1.1.3

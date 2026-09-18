@@ -112,9 +112,25 @@ how you want Pages configured).
 
 ```bash
 pip install -r requirements.txt
-# or: pip install pillow numpy piexif opencv-python-headless tqdm --break-system-packages
+# or: pip install pillow numpy opencv-python-headless tqdm --break-system-packages
 # (video output with audio also needs an ffmpeg binary on PATH)
+```
 
+`piexif` (in `requirements.txt`) is optional: it's only needed for
+`--author`/`--copyright` metadata on **JPEG** output. If it's missing,
+those flags are silently skipped with a printed note — everything else,
+including PNG metadata, works without it.
+
+If **no TrueType font is found** (see `--font-path` below): with
+Pillow >= 10.1 the tool falls back to Pillow's built-in scalable font, so
+`--font-size` still works, just with a different typeface than DejaVu/Arial.
+On older Pillow, the fallback is a tiny fixed-size bitmap font that ignores
+`--font-size` (a warning is printed). Either way, pass `--font-path
+/path/to/some.ttf` for full control (or `brew install --cask
+font-dejavu-sans` / your distro's `fonts-dejavu` package to match the
+Linux default look).
+
+```bash
 # single image
 python3 cli/watermark.py input.jpg output.jpg --text "@yourhandle"
 
@@ -142,7 +158,7 @@ python3 cli/extract_invisible.py output.png
 | `--font-size` | `36` | Font size in px |
 | `--angle` | `30` | Base rotation angle in degrees |
 | `--spacing` | `250` | Spacing between watermark tiles, in px |
-| `--font-path` | *(auto)* | Path to a custom `.ttf` font |
+| `--font-path` | *(auto)* | Path to a custom `.ttf` font. Auto-detect tries DejaVu Sans Bold (Linux), Arial Bold (macOS), then Arial Bold (Windows), in that order; see `DEFAULT_FONT_PATHS` in `cli/wmcore.py` |
 | `--batch` | off | Treat input/output as folders (images + video, mixed) |
 | `--workers` | CPU count | Parallel workers: files-in-parallel for `--batch` images, frames-in-parallel for a video |
 | `--seed` | random | Seed for per-tile jitter (reuse to reproduce the same pattern) |
@@ -152,6 +168,7 @@ python3 cli/extract_invisible.py output.png
 | `--invisible-text` | *(same as `--text`)* | Text for the hidden mark |
 | `--author` | — | Author name, embedded in EXIF/PNG metadata (images only) |
 | `--copyright` | — | Copyright string, embedded in EXIF/PNG metadata (images only) |
+| `--no-shared-memory` | off | Video only: disable the shared-memory frame transport, fall back to a slower pickle-per-frame path (useful if shared memory isn't available in your environment, e.g. some sandboxes without `/dev/shm`) |
 
 ## Project structure
 
@@ -162,11 +179,25 @@ python3 cli/extract_invisible.py output.png
 │   ├── watermark.py            # CLI entry: images, batch + multiprocessing, dispatches video
 │   ├── video.py                # Video pipeline: parallel frame workers, ffmpeg mux/encode
 │   └── extract_invisible.py    # Reads back the hidden LSB payload
+├── tests/                      # pytest unit tests for the blend math + LSB round trip
 ├── web/
 │   └── index.html      # Browser tool: multi-image batch, zip export, runs entirely client-side
 ├── requirements.txt
+├── requirements-dev.txt        # requirements.txt + pytest
 └── README.md
 ```
+
+## Tests
+
+```bash
+pip install -r requirements-dev.txt
+pytest tests/
+```
+
+Covers the blend-mode math (`wmcore.blend_arrays`, all three modes) and the
+invisible-LSB embed/extract round trip - the two places most likely to
+silently regress since neither has an obvious "it crashed" failure mode
+(a wrong blend or a broken payload just *looks* fine at a glance).
 
 ## License
 

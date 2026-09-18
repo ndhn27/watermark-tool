@@ -29,18 +29,47 @@ except ImportError:
 
 DEFAULT_FONT_PATHS = [
     "/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf",  # Linux/WSL2
+    "/System/Library/Fonts/Supplemental/Arial Bold.ttf",      # macOS (Catalina+, stock)
+    "/Library/Fonts/Arial Bold.ttf",                          # macOS (older / MS Office install)
     "C:\\Windows\\Fonts\\arialbd.ttf",                         # Windows fallback
 ]
 
 VIDEO_EXTS = (".mp4", ".mov", ".m4v", ".avi", ".mkv", ".webm")
 IMAGE_EXTS = (".jpg", ".jpeg", ".png", ".webp", ".bmp", ".tif", ".tiff")
 
+_font_fallback_warned = False
+
 
 def load_font(font_size, font_path=None):
+    """Load a TrueType font, trying `font_path` (if given) then the
+    platform-default candidates in DEFAULT_FONT_PATHS, in order.
+
+    If none of those exist, we still try PIL's built-in default font at
+    `font_size` (Pillow >= 10.1 supports this: `ImageFont.load_default(size=...)`
+    returns a real scalable font instead of the old fixed tiny bitmap). Only
+    on older Pillow, where that isn't available, do we fall back to the
+    classic `load_default()` - which ignores `font_size` and is tiny/blocky
+    - and warn once per process about it (this can be called once per
+    output file, so a large --batch run shouldn't spam the same warning).
+    """
+    global _font_fallback_warned
     candidates = [font_path] if font_path else DEFAULT_FONT_PATHS
     for path in candidates:
         if path and os.path.exists(path):
             return ImageFont.truetype(path, font_size)
+    try:
+        return ImageFont.load_default(size=font_size)
+    except TypeError:
+        pass  # Pillow < 10.1: load_default() doesn't take a size argument
+    if not _font_fallback_warned:
+        checked = ", ".join(p for p in candidates if p)
+        print(
+            f"Warning: no TrueType font found (checked: {checked}) and this Pillow "
+            "version's built-in fallback font is fixed-size. Text will be tiny and "
+            "won't scale with --font-size. Pass --font-path /path/to/font.ttf, or "
+            "upgrade Pillow to >=10.1, to fix this."
+        )
+        _font_fallback_warned = True
     return ImageFont.load_default()
 
 
