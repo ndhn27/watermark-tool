@@ -20,6 +20,7 @@ import os
 import random
 import zlib
 
+import cv2
 import numpy as np
 from PIL import Image, ImageDraw, ImageFont, PngImagePlugin
 
@@ -96,23 +97,29 @@ def derive_seed(base_seed, key):
 # Visible grid watermark: per-tile jitter
 # ---------------------------------------------------------------------------
 
-def create_watermark_layer(
+def _build_grid_layer(
     size,
     text,
-    font_size=36,
-    opacity=90,
-    angle=30,
-    spacing=250,
-    font_path=None,
-    seed=None,
-    jitter_pos=0.35,
-    jitter_opacity=40,
-    jitter_angle=8,
+    font_size,
+    opacity,
+    angle,
+    spacing,
+    font_path,
+    seed,
+    jitter_pos,
+    jitter_opacity,
+    jitter_angle,
 ):
     """Build a transparent RGBA layer with the watermark repeated in a grid,
     where every tile gets its own random position offset, opacity, and
     rotation (all derived from `seed`, so the same seed always reproduces
     the exact same pattern).
+
+    This is the plain, non-adaptive grid builder - kept as its own function
+    (rather than inlined in create_watermark_layer) because adaptive
+    placement needs to build *two* of these at different spacings (see
+    create_watermark_layer below) and they must share this exact logic or
+    the two grids could drift apart in look/feel.
     """
     rng = random.Random(seed)
     width, height = size
@@ -153,6 +160,208 @@ def create_watermark_layer(
     left = (diagonal - width) // 2
     top = (diagonal - height) // 2
     return layer.crop((left, top, left + width, top + height))
+
+
+def create_watermark_layer(
+    size,
+    text,
+    font_size=36,
+    opacity=90,
+    angle=30,
+    spacing=250,
+    font_path=None,
+    seed=None,
+    jitter_pos=0.35,
+    jitter_opacity=40,
+    jitter_angle=8,
+    sensitivity_map=None,
+    adaptive_strength=0.6,
+    infill_spacing_divisor=2.0,
+):
+    """Build the watermark layer for one image/frame - a plain jittered grid
+    (see _build_grid_layer), optionally with an extra, denser grid layered
+    on top wherever `sensitivity_map` says the removal is likely to be hard
+    to hide (faces, high-detail "main subject" regions - see
+    compute_sensitivity_map).
+
+    Adaptive placement is implemented as a *second*, independently-jittered
+    grid at a finer `spacing` (spacing / infill_spacing_divisor), masked by
+    `sensitivity_map * adaptive_strength` and alpha-composited on top of the
+    base grid. Two things fall out of that approach for free:
+      - Outside the mask (sensitivity ~ 0), the infill layer's alpha is
+        scaled to ~0, so the image is pixel-for-pixel identical to the
+        non-adaptive path there - "off" really means off.
+      - Because it's a *second* full grid rather than, say, inserting a few
+        extra tiles by hand, it inherits the same per-tile jitter (and its
+        own derived seed - see derive_seed) instead of adding a second,
+        perfectly-regular pattern that would reintroduce the exact
+        FFT-periodicity weakness per-tile jitter exists to break.
+
+    `sensitivity_map`, if given, must be an (height, width) float array in
+    0..1 matching `size`. When None (the default), this is exactly the old
+    single-grid behavior - existing callers that never pass these new
+    kwargs see no change at all.
+    """
+    base_layer = _build_grid_layer(
+        size, text, font_size, opacity, angle, spacing, font_path, seed,
+        jitter_pos, jitter_opacity, jitter_angle,
+    )
+    if sensitivity_map is None or adaptive_strength <= 0:
+        return base_layer
+
+    width, height = size
+    mask = np.clip(sensitivity_map, 0, 1).astype(np.float32)
+    if mask.shape != (height, width):
+        raise ValueError(
+            f"sensitivity_map shape {mask.shape} does not match image size "
+            f"(height={height}, width={width}) - build it from an array of "
+            "this same image/frame."
+        )
+    mask *= float(np.clip(adaptive_strength, 0, 1))
+
+    infill_spacing = int(max(24, spacing / max(1.0, infill_spacing_divisor)))
+    # A distinct derived seed, not the same seed reused: an identical
+    # pattern stamped twice would just look like one bolder grid at the
+    # *same* jitter, not two independent ones - and a shared seed here
+    # would also make the infill grid's jitter perfectly correlated with
+    # the base grid's, which is exactly the kind of predictable structure
+    # per-tile jitter is meant to avoid introducing elsewhere in this file.
+    infill_seed = derive_seed(seed, "adaptive-infill")
+    infill_layer = _build_grid_layer(
+        size, text, font_size, opacity, angle, infill_spacing, font_path, infill_seed,
+        jitter_pos, jitter_opacity, jitter_angle,
+    )
+
+    infill_arr = np.array(infill_layer, dtype=np.float32)  # copy, not a view
+    infill_arr[..., 3] *= mask
+    infill_layer = Image.fromarray(np.clip(infill_arr, 0, 255).astype(np.uint8), "RGBA")
+
+    return Image.alpha_composite(base_layer, infill_layer)
+
+
+# ---------------------------------------------------------------------------
+# Content-adaptive placement: detect "sensitive" regions (faces, high-detail
+# main subject) so the grid above gets denser / darker exactly there
+# ---------------------------------------------------------------------------
+
+_face_cascade_cache = {}
+
+
+def _get_face_cascade(cascade_path=None):
+    """Load (and cache, keyed by path) a Haar cascade face detector.
+
+    Haar cascades are the classic lightweight face model: a few hundred KB
+    XML file, CPU-only, no GPU and no network download required - it ships
+    inside opencv-python-headless itself (cv2.data.haarcascades), which
+    this project already depends on for video frame decoding. That makes
+    it a good fit here: real signal for the single most common "sensitive"
+    region (someone's face is usually the most detail-rich, hardest area to
+    inpaint over without a visible seam) at essentially no added cost or
+    new trust surface over what the tool already needs.
+    """
+    key = cascade_path or "__default__"
+    if key not in _face_cascade_cache:
+        path = cascade_path or os.path.join(cv2.data.haarcascades, "haarcascade_frontalface_default.xml")
+        clf = cv2.CascadeClassifier(path)
+        if clf.empty():
+            raise ValueError(f"Could not load face cascade from: {path}")
+        _face_cascade_cache[key] = clf
+    return _face_cascade_cache[key]
+
+
+def compute_sensitivity_map(rgb_uint8, face_cascade_path=None, detail_weight=0.5, downscale=4, face_pad=0.4):
+    """Build an (height, width) float32 map in 0..1 marking where a clean
+    watermark-removal inpaint is most likely to leave visible artifacts:
+    faces, and more generally any high-detail "main subject" area, as
+    opposed to flat sky/wall/background-blur, which an inpainting model
+    can regenerate almost invisibly.
+
+    Two signals, both intentionally simple/fast rather than another neural
+    net, combined with max() so either one alone is enough to flag a region:
+      1. Face detection (Haar cascade - see _get_face_cascade). Specific
+         and strong wherever it fires.
+      2. Local detail energy: Laplacian magnitude, box-averaged over a
+         neighborhood. A general "how textured/high-frequency is this
+         patch" proxy - it also lights up on other detailed subjects
+         (patterned clothing, foreground objects, on-image text) even with
+         no face in frame, which plain face detection alone would miss.
+
+    Both run on a downscaled copy for speed (`downscale`); the combined
+    result is then Gaussian-blurred and resized back up, so the boost fades
+    in smoothly around each detected region instead of showing a hard
+    rectangular seam - a sharp-edged boost would itself be a visible tell
+    that the image was processed differently there, working against the
+    whole point.
+    """
+    h, w = rgb_uint8.shape[:2]
+    small_w, small_h = max(1, w // downscale), max(1, h // downscale)
+    small = cv2.resize(rgb_uint8, (small_w, small_h), interpolation=cv2.INTER_AREA)
+    gray = cv2.cvtColor(small, cv2.COLOR_RGB2GRAY)
+
+    # --- signal 1: faces --------------------------------------------------
+    face_mask = np.zeros((small_h, small_w), dtype=np.float32)
+    try:
+        cascade = _get_face_cascade(face_cascade_path)
+        faces = cascade.detectMultiScale(gray, scaleFactor=1.1, minNeighbors=5, minSize=(20, 20))
+    except (cv2.error, ValueError):
+        faces = ()  # a missing/corrupt custom --face-cascade: degrade to detail-only
+    for (fx, fy, fw, fh) in faces:
+        pad_x, pad_y = int(fw * face_pad), int(fh * face_pad)
+        x0, y0 = max(0, fx - pad_x), max(0, fy - pad_y)
+        x1, y1 = min(small_w, fx + fw + pad_x), min(small_h, fy + fh + pad_y)
+        face_mask[y0:y1, x0:x1] = 1.0
+
+    # --- signal 2: local detail energy -------------------------------------
+    lap = cv2.Laplacian(gray, cv2.CV_32F, ksize=3)
+    detail = cv2.blur(np.abs(lap), (9, 9))
+    # Robust-normalize: a handful of very sharp pixels (a hard edge, jpeg
+    # blocking) shouldn't blow out the whole scale and wash out everything
+    # else to near-1. Clip to the 95th percentile before scaling to 0..1.
+    ceiling = np.percentile(detail, 95) or 1.0
+    detail_norm = np.clip(detail / ceiling, 0, 1)
+
+    combined = np.clip(np.maximum(face_mask, detail_norm * detail_weight), 0, 1)
+
+    blur_ksize = max(3, (min(small_w, small_h) // 20) | 1)  # odd kernel size
+    combined = cv2.GaussianBlur(combined, (blur_ksize, blur_ksize), 0)
+    full = cv2.resize(combined, (w, h), interpolation=cv2.INTER_LINEAR)
+    return np.clip(full, 0, 1).astype(np.float32)
+
+
+def build_ink_map(ink, sensitivity_map, adaptive_strength, mode):
+    """Turn a scalar --ink into a spatially-varying (height, width, 1) array
+    when adaptive placement is on, so multiply/overlay blending reads
+    darker/stronger exactly over `sensitivity_map`'s detected regions -
+    without changing what --ink means anywhere the map is near 0.
+
+    The direction of the shift always moves `ink` further from that blend
+    mode's own no-op point (see the --ink docs on create_watermark_layer's
+    callers): for multiply that's 1.0 (smaller ink = darker), for overlay
+    it's 0.5 (moving toward either 0 or 1 intensifies, crossing 0.5 would
+    flip which side of the no-op point you're on and invert the effect).
+    Both branches below are written so the shift can approach but never
+    reach - let alone cross - that no-op point, however large
+    `adaptive_strength` is.
+
+    blend_arrays()/composite() already do plain numpy arithmetic with
+    `ink` (`base01 * ink`, etc.), so handing them an array here instead of
+    a float works for free via numpy broadcasting - no change needed there.
+    Returns `ink` unchanged for mode="alpha" (ink doesn't apply there) or
+    when adaptive placement isn't in use, so existing callers are unaffected.
+    """
+    if sensitivity_map is None or adaptive_strength <= 0 or mode == "alpha":
+        return ink
+    s = np.clip(sensitivity_map, 0, 1).astype(np.float32) * float(np.clip(adaptive_strength, 0, 1))
+    if mode == "multiply":
+        ink_map = ink * (1.0 - s)
+    elif mode == "overlay":
+        if ink <= 0.5:
+            ink_map = ink * (1.0 - s)
+        else:
+            ink_map = ink + s * (1.0 - ink)
+    else:
+        return ink
+    return ink_map[..., None]
 
 
 # ---------------------------------------------------------------------------

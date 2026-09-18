@@ -36,6 +36,14 @@ Removal-resistance features:
     platforms that read standard metadata see attribution even if they
     never look at the pixels at all. This is a separate, complementary
     signal - anyone can strip metadata, so don't rely on it alone.
+  - Content-adaptive placement (--adaptive): a lightweight face detector
+    (opencv's bundled Haar cascade) plus a local detail-energy signal find
+    the faces / high-detail "main subject" regions where a clean
+    inpaint-based removal is most likely to leave a visible seam, and the
+    grid gets denser (and, for --blend multiply/overlay, darker) exactly
+    there via wmcore.compute_sensitivity_map / build_ink_map. See the
+    README for the full flag list (--adaptive-strength, --face-cascade,
+    --adaptive-preview, etc).
 
 Video support:
   - Any input ending in one of wmcore.VIDEO_EXTS (.mp4, .mov, .m4v, .avi,
@@ -77,6 +85,7 @@ import argparse
 import os
 from concurrent.futures import ProcessPoolExecutor
 
+import numpy as np
 from PIL import Image
 
 import video as video_mod
@@ -109,15 +118,41 @@ def apply_watermark(
     invisible_text=None,
     author=None,
     copyright_text=None,
+    adaptive=False,
+    adaptive_strength=0.6,
+    adaptive_detail_weight=0.5,
+    face_cascade=None,
+    adaptive_infill_divisor=2.0,
+    adaptive_preview=None,
 ):
     """Watermark a single still image. Also the per-file unit of work for
     the parallel --batch pool below.
+
+    When `adaptive` is set, a lightweight pass (wmcore.compute_sensitivity_map)
+    detects faces and other high-detail "main subject" regions first, and
+    the grid gets denser (an extra masked layer, see
+    wmcore.create_watermark_layer) and, for multiply/overlay blend, darker
+    (wmcore.build_ink_map) exactly there - the regions where a clean
+    inpaint-based removal is most likely to leave a visible seam.
     """
     base = Image.open(input_path).convert("RGBA")
+
+    sensitivity_map = None
+    if adaptive:
+        rgb = np.asarray(base.convert("RGB"))
+        sensitivity_map = wmcore.compute_sensitivity_map(
+            rgb, face_cascade_path=face_cascade, detail_weight=adaptive_detail_weight,
+        )
+        if adaptive_preview:
+            Image.fromarray((sensitivity_map * 255).astype(np.uint8), "L").save(adaptive_preview)
+
     watermark_layer = wmcore.create_watermark_layer(
-        base.size, text, font_size, opacity, angle, spacing, font_path, seed=seed
+        base.size, text, font_size, opacity, angle, spacing, font_path, seed=seed,
+        sensitivity_map=sensitivity_map, adaptive_strength=adaptive_strength,
+        infill_spacing_divisor=adaptive_infill_divisor,
     )
-    watermarked = wmcore.composite(base, watermark_layer, mode=blend, ink=ink)
+    ink_for_blend = wmcore.build_ink_map(ink, sensitivity_map, adaptive_strength, blend)
+    watermarked = wmcore.composite(base, watermark_layer, mode=blend, ink=ink_for_blend)
 
     if invisible:
         if output_path.lower().endswith((".jpg", ".jpeg")):
@@ -164,6 +199,8 @@ def apply_watermark_any(input_path, output_path, image_kwargs, video_kwargs, wor
     if ext in wmcore.VIDEO_EXTS:
         if image_kwargs.get("invisible") or image_kwargs.get("author") or image_kwargs.get("copyright_text"):
             print(f"Note: --invisible/--author/--copyright are image-only; ignored for {input_path}.")
+        if image_kwargs.get("adaptive_preview"):
+            print(f"Note: --adaptive-preview is images-only; ignored for {input_path}.")
         video_mod.apply_watermark_video(input_path, output_path, workers=workers, **video_kwargs)
     else:
         apply_watermark(input_path, output_path, **image_kwargs)
@@ -216,18 +253,61 @@ def main():
     parser.add_argument("--invisible-text", default=None, help="Text for the hidden mark, defaults to --text")
     parser.add_argument("--author", default=None, help="Author name to embed in EXIF/PNG metadata (images only)")
     parser.add_argument("--copyright", dest="copyright_text", default=None, help="Copyright string to embed in EXIF/PNG metadata (images only)")
+    parser.add_argument(
+        "--adaptive", action="store_true",
+        help="Content-aware placement: detect faces and other high-detail 'main subject' "
+             "regions and increase watermark density (and, for --blend multiply/overlay, "
+             "darkness) exactly there - where a clean inpaint-based removal is most likely "
+             "to leave visible artifacts. Uses opencv's bundled face detector plus a local "
+             "detail-energy pass; no extra download or dependency.",
+    )
+    parser.add_argument(
+        "--adaptive-strength", type=float, default=0.6,
+        help="0-1, how strongly to boost density/darkness in detected regions (default: 0.6). "
+             "0 behaves like --adaptive was never passed.",
+    )
+    parser.add_argument(
+        "--adaptive-detail-weight", type=float, default=0.5,
+        help="0-1, weight of the general high-detail 'main subject' signal relative to face "
+             "detection, which is always full-strength wherever a face is found (default: 0.5)",
+    )
+    parser.add_argument(
+        "--face-cascade", default=None,
+        help="Path to a custom Haar cascade XML for face detection (default: the "
+             "frontal-face model bundled with opencv)",
+    )
+    parser.add_argument(
+        "--adaptive-infill-divisor", type=float, default=2.0,
+        help="How much denser the extra grid is inside detected regions - --spacing is "
+             "divided by this there (default: 2.0, i.e. twice as dense)",
+    )
+    parser.add_argument(
+        "--adaptive-preview", default=None,
+        help="Images only, single-file mode only: also save the detected sensitivity mask "
+             "as a grayscale PNG at this path (white = most boosted), for tuning the flags above",
+    )
     args = parser.parse_args()
+
+    if args.batch and args.adaptive_preview:
+        print("Note: --adaptive-preview isn't supported with --batch (one path, many images); ignored.")
 
     image_kwargs = dict(
         text=args.text, opacity=args.opacity, font_size=args.font_size, angle=args.angle,
         spacing=args.spacing, font_path=args.font_path, seed=args.seed, blend=args.blend, ink=args.ink,
         invisible=args.invisible, invisible_text=args.invisible_text, author=args.author,
         copyright_text=args.copyright_text,
+        adaptive=args.adaptive, adaptive_strength=args.adaptive_strength,
+        adaptive_detail_weight=args.adaptive_detail_weight, face_cascade=args.face_cascade,
+        adaptive_infill_divisor=args.adaptive_infill_divisor,
+        adaptive_preview=None if args.batch else args.adaptive_preview,
     )
     video_kwargs = dict(
         text=args.text, opacity=args.opacity, font_size=args.font_size, angle=args.angle,
         spacing=args.spacing, font_path=args.font_path, seed=args.seed, blend=args.blend, ink=args.ink,
         use_shared_memory=args.use_shared_memory, jitter_refresh_seconds=args.jitter_refresh_seconds,
+        adaptive=args.adaptive, adaptive_strength=args.adaptive_strength,
+        adaptive_detail_weight=args.adaptive_detail_weight, face_cascade=args.face_cascade,
+        adaptive_infill_divisor=args.adaptive_infill_divisor,
     )
     workers = args.workers or os.cpu_count() or 1
 

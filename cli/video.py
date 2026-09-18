@@ -202,9 +202,14 @@ def _ffmpeg_encode_pipe(ffmpeg_bin, output_path, width, height, fps, audio_sourc
 # Pipeline
 # ---------------------------------------------------------------------------
 
-def _build_mark_arrays(size, text, font_size, opacity, angle, spacing, font_path, seed):
+def _build_mark_arrays(
+    size, text, font_size, opacity, angle, spacing, font_path, seed,
+    sensitivity_map=None, adaptive_strength=0.6, infill_spacing_divisor=2.0,
+):
     mark_layer = wmcore.create_watermark_layer(
-        size, text, font_size, opacity, angle, spacing, font_path, seed=seed
+        size, text, font_size, opacity, angle, spacing, font_path, seed=seed,
+        sensitivity_map=sensitivity_map, adaptive_strength=adaptive_strength,
+        infill_spacing_divisor=infill_spacing_divisor,
     )
     return wmcore.watermark_layer_to_arrays(mark_layer)
 
@@ -225,6 +230,11 @@ def apply_watermark_video(
     show_progress=True,
     use_shared_memory=True,
     jitter_refresh_seconds=4.0,
+    adaptive=False,
+    adaptive_strength=0.6,
+    adaptive_detail_weight=0.5,
+    face_cascade=None,
+    adaptive_infill_divisor=2.0,
 ):
     cap = cv2.VideoCapture(input_path)
     if not cap.isOpened():
@@ -257,10 +267,34 @@ def apply_watermark_video(
         )
         _short_refresh_warned = True
 
+    # Adaptive placement: detect faces/high-detail regions once, from the
+    # first frame, and reuse that same map for every segment of the whole
+    # clip (recomputing per-segment would need buffering a frame ahead of
+    # the read/submit loop below, which isn't worth the complexity for most
+    # footage - a single subject/framing rarely moves so far across a clip
+    # that the detected regions become wrong; a hard cut partway through is
+    # the case this approximation handles worst). The first frame itself is
+    # NOT discarded - _first_frame_pending below feeds it back into the
+    # normal per-frame loop as frame 0.
+    first_ok, first_frame = cap.read()
+    _first_frame_pending = True
+    sensitivity_map = None
+    if adaptive:
+        if first_ok:
+            rgb_first = cv2.cvtColor(first_frame, cv2.COLOR_BGR2RGB)
+            sensitivity_map = wmcore.compute_sensitivity_map(
+                rgb_first, face_cascade_path=face_cascade, detail_weight=adaptive_detail_weight,
+            )
+        else:
+            print(f"Note: {input_path} has no readable frames; skipping --adaptive detection.")
+
     mark_rgb01, mark_alpha01 = _build_mark_arrays(
         (width, height), text, font_size, opacity, angle, spacing, font_path,
         seed=wmcore.derive_seed(seed, 0) if frames_per_segment else seed,
+        sensitivity_map=sensitivity_map, adaptive_strength=adaptive_strength,
+        infill_spacing_divisor=adaptive_infill_divisor,
     )
+    ink = wmcore.build_ink_map(ink, sensitivity_map, adaptive_strength, blend)
 
     ffmpeg_bin = shutil.which("ffmpeg")
     writer = None
@@ -353,11 +387,17 @@ def apply_watermark_video(
                 mark_rgb01, mark_alpha01 = _build_mark_arrays(
                     (width, height), text, font_size, opacity, angle, spacing, font_path,
                     seed=wmcore.derive_seed(seed, segment_index),
+                    sensitivity_map=sensitivity_map, adaptive_strength=adaptive_strength,
+                    infill_spacing_divisor=adaptive_infill_divisor,
                 )
                 pool = _make_pool(mark_rgb01, mark_alpha01)
                 frames_in_segment = 0
 
-            ok, frame = cap.read()
+            if _first_frame_pending:
+                ok, frame = first_ok, first_frame
+                _first_frame_pending = False
+            else:
+                ok, frame = cap.read()
             if not ok:
                 break
             if use_shm:

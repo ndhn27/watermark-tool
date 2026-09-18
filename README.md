@@ -87,6 +87,31 @@ in principle be separated from the base image. The CLI addresses both:
   else in this list (real DCT/DWT or spread-spectrum watermarking is
   usually its own research-grade project, not a quick addition), so it's
   left here as a direction rather than implemented.
+- **Content-adaptive placement** (`--adaptive`) — a lightweight pass
+  (opencv's bundled Haar face detector, plus a local detail-energy signal
+  that also catches other high-detail "main subject" areas: patterned
+  clothing, foreground objects, on-image text) finds the regions of the
+  frame where a clean inpaint-based removal is most likely to leave a
+  visible seam, and stamps a second, denser grid on top exactly there
+  (`--adaptive-infill-divisor`, default `2.0`, sets how much denser).
+  For `--blend multiply|overlay`, it also darkens the mark further in
+  those same regions (`--adaptive-strength`, default `0.6`, 0-1) — moving
+  `--ink` further from that mode's own no-op point, the same one described
+  above, never past it. Outside the detected regions the image is
+  identical to the non-adaptive path — the boost is additive, not a
+  global change. No extra model download or dependency: the face detector
+  ships inside `opencv-python-headless`, already required for video.
+  `--adaptive-preview some.png` (single images only) saves the detected
+  mask itself (white = most boosted) so you can sanity-check or tune
+  `--adaptive-detail-weight` (how much weight the general detail signal
+  gets relative to face detection, default `0.5`) before committing to a
+  batch run. `--face-cascade` swaps in a different Haar cascade XML if the
+  bundled frontal-face one isn't a good fit for your subjects (e.g. a
+  profile-face cascade for photos that aren't mostly front-facing).
+  For video, the regions are detected once from the first frame and reused
+  for the whole clip (recomputing every jitter-refresh segment would need
+  buffering a frame ahead of the encode pipeline) — fine for a stable
+  subject/framing, weakest across a hard cut partway through.
 - **Provenance metadata** (`--author`, `--copyright`, images only) —
   written into real EXIF (JPEG, via `piexif`) or PNG text chunks, so tools
   that read standard metadata see attribution even without looking at the
@@ -261,6 +286,10 @@ python3 cli/watermark.py input_folder/ output_folder/ --text "@yourhandle" \
 python3 cli/watermark.py input.jpg output.png --text "@yourhandle" \
     --blend multiply --invisible --author "Jane Doe" --copyright "(c) 2026 Jane Doe"
 
+# content-adaptive placement: denser + darker over faces/main subject
+python3 cli/watermark.py input.jpg output.png --text "@yourhandle" \
+    --blend multiply --adaptive --adaptive-strength 0.8 --adaptive-preview mask.png
+
 # read back the invisible mark later (scans the whole image, not just one corner)
 python3 cli/extract_invisible.py output.png
 # --max-length caps how long a payload it will consider plausible while
@@ -287,6 +316,12 @@ python3 cli/extract_invisible.py output.png
 | `--invisible-text` | *(same as `--text`)* | Text for the hidden mark |
 | `--author` | — | Author name, embedded in EXIF/PNG metadata (images only) |
 | `--copyright` | — | Copyright string, embedded in EXIF/PNG metadata (images only) |
+| `--adaptive` | off | Detect faces/high-detail "main subject" regions and increase density there (+ darkness for multiply/overlay) |
+| `--adaptive-strength` | `0.6` | 0-1, how strongly to boost density/darkness in detected regions |
+| `--adaptive-detail-weight` | `0.5` | 0-1, weight of the general detail signal relative to face detection |
+| `--face-cascade` | *(bundled)* | Path to a custom Haar cascade XML for face detection |
+| `--adaptive-infill-divisor` | `2.0` | How much denser the extra grid is inside detected regions (spacing ÷ this) |
+| `--adaptive-preview` | — | Images, single-file only: save the detected sensitivity mask as a PNG, for tuning |
 | `--no-shared-memory` | off | Video only: disable the shared-memory frame transport, fall back to a slower pickle-per-frame path (useful if shared memory isn't available in your environment, e.g. some sandboxes without `/dev/shm`) |
 | `--jitter-refresh-seconds` | `4.0` | Video only: regenerate the jitter pattern every N seconds of output (rebuilds the worker pool at each boundary — see note below). `0` disables this and uses one static pattern for the whole clip — see the per-tile-jitter section above for why that's weaker |
 
