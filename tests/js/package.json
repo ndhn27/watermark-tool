@@ -1,0 +1,7 @@
+{
+  "name": "watermark-tool-web-tests",
+  "private": true,
+  "type": "module",
+  "description": "Tests for web/index.html's server mode. wm-server.test.mjs needs only Node >= 20; page-smoke.test.mjs also needs jsdom (npm install in this directory) and skips itself without it.",
+  "devDependencies": { "jsdom": "^25.0.0" }
+}

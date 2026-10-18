@@ -453,6 +453,38 @@
     color: var(--text-dim);
     text-align: center;
   }
+  /* ---- Server mode (only ever shown when a wmapp server answers; see #wm-server) ---- */
+  input[type="number"], select {
+    background: var(--panel-2);
+    border: 1px solid var(--border);
+    border-radius: 6px;
+    padding: 7px 9px;
+    color: var(--text);
+    font-family: var(--sans);
+    font-size: 13px;
+    min-width: 0;
+  }
+  input[type="number"]:focus, select:focus { outline: none; border-color: var(--accent); }
+  .srv-toggle { display: flex; align-items: center; gap: 8px; cursor: pointer; color: var(--text); font-size: 13px; }
+  .srv-tag {
+    font-family: var(--mono); font-size: 10px; letter-spacing: 0.06em; text-transform: uppercase;
+    color: var(--accent-strong); border: 1px solid var(--accent); border-radius: 3px; padding: 1px 5px;
+  }
+  #server-panel { border-top: 1px solid var(--border); padding-top: 14px; }
+  #srv-options { display: flex; flex-direction: column; gap: 8px; }
+  .srv-group {
+    margin: 8px 0 0; font-family: var(--mono); font-size: 10.5px; letter-spacing: 0.08em;
+    text-transform: uppercase; color: var(--text-dim);
+  }
+  .srv-row { display: grid; grid-template-columns: 1fr 1.2fr; gap: 8px; align-items: center; }
+  .srv-row[hidden] { display: none; }
+  .srv-row label { text-transform: capitalize; }
+  .srv-row input[type="checkbox"] { justify-self: start; accent-color: var(--accent); }
+  .srv-notes { margin: 0; padding: 0; list-style: none; display: flex; flex-direction: column; gap: 4px; }
+  .srv-notes li { font-size: 11px; line-height: 1.45; color: var(--text-dim); }
+  .srv-notes li.key { color: var(--accent-strong); font-family: var(--mono); }
+  .srv-notes li.error { color: #e07a6b; }
+  .swatches.locked { opacity: 0.4; pointer-events: none; }
 </style>
 </head>
 <body>
@@ -525,6 +557,17 @@
           </div>
         </div>
 
+        <div class="field" id="server-panel" hidden>
+          <label class="srv-toggle" for="srv-toggle">
+            <input type="checkbox" id="srv-toggle" />
+            Full pipeline <span class="srv-tag">server</span>
+          </label>
+          <p class="hint" id="srv-status">A local server is available. Turn this on for jitter, blend modes, invisible marks, metadata and C2PA.</p>
+          <div id="srv-options" hidden></div>
+          <button type="button" id="srv-preview-btn" class="ghost-btn" hidden>Render preview on server</button>
+          <ul class="srv-notes" id="srv-notes" hidden></ul>
+        </div>
+
         <div class="batch-actions">
           <button id="download-btn" class="primary-btn" disabled>Download this image</button>
         </div>
@@ -538,7 +581,7 @@
         </div>
 
         <p class="hint" id="download-hint">Choose one or more images to start</p>
-        <p class="footnote">Everything runs locally in your browser — images are never uploaded to any server. Same settings are applied to every loaded image.</p>
+        <p class="footnote" id="footnote">Everything runs locally in your browser — images are never uploaded to any server. Same settings are applied to every loaded image.</p>
       </aside>
 
       <section class="preview-wrap">
@@ -571,6 +614,108 @@
     </main>
   </div>
 
+<script id="wm-server">
+/* WmServer - client for the wmapp HTTP API (cli/serve.py). No DOM in here: the page
+ * script below owns the UI, this owns "how to talk to the server", so it can be
+ * tested on its own (tests/js/wm-server.test.mjs) against a real server.
+ *
+ * The page works fully without any server (everything client-side, nothing uploaded).
+ * If detect() finds one, the page offers an opt-in "Full pipeline" mode that renders
+ * with the SAME code as the CLI and the Python API - jitter, blend modes, invisible
+ * marks, metadata, C2PA - and builds its extra controls from the server's /api/schema
+ * instead of hard-coding them, so a new option in wmapp/options.py appears here on its own. */
+(function (root) {
+  'use strict';
+
+  // The page has its own sliders for these; the schema's versions of them aren't rendered again.
+  const PAGE_COVERED = ['text', 'opacity', 'font_size', 'angle', 'spacing'];
+  // Not rendered: an explicit watermark ID names ONE file (the ledger refuses a repeat), which makes no
+  // sense for a page that stamps image after image with the same form values. API/CLI/Python only.
+  const NOT_FOR_THE_PAGE = ['id_value'];
+
+  function baseUrl(search) {
+    const v = new URLSearchParams(search || '').get('server');
+    return v ? v.replace(/\/+$/, '') : '';
+  }
+
+  async function detect(base, fetchImpl, timeoutMs) {
+    const f = fetchImpl || root.fetch;
+    if (!f) return null;
+    const ctl = typeof AbortController !== 'undefined' ? new AbortController() : null;
+    const timer = ctl ? setTimeout(() => ctl.abort(), timeoutMs || 1500) : null;
+    try {
+      const res = await f((base || '') + '/api/schema', ctl ? { signal: ctl.signal } : undefined);
+      if (!res.ok) return null;
+      const data = await res.json();
+      return data && Array.isArray(data.watermark) ? data : null;
+    } catch (e) {
+      return null;                       // file://, static hosting, server down: just stay in local mode
+    } finally {
+      if (timer) clearTimeout(timer);
+    }
+  }
+
+  // The page's units -> the API's. The page's opacity is a percentage; the API's is 0-255 alpha.
+  function pageToSpec(v) {
+    const pct = Math.max(0, Math.min(100, Number(v.opacityPct)));
+    return { text: v.text, opacity: Math.round(pct * 2.55), font_size: v.fontSize, angle: v.angle, spacing: v.spacing };
+  }
+
+  // Options to render as extra controls: schema order, minus what the page already covers,
+  // video-only options, server-local ones, and features this install can't do.
+  function controls(schema) {
+    const caps = schema.capabilities || {};
+    return schema.watermark.filter((o) =>
+      !PAGE_COVERED.includes(o.name) && !NOT_FOR_THE_PAGE.includes(o.name) && !o.local &&
+      o.scope.includes('image') &&
+      !(o.group === 'c2pa' && caps.c2pa === false) &&
+      !(o.name === 'c2pa' && caps.c2pa === false));
+  }
+
+  function visible(option, values) {
+    const req = option.requires || {};
+    return Object.keys(req).every((k) => values[k] === req[k]);
+  }
+
+  // raw: {name: string | boolean} straight from the form -> typed values, only for options that
+  // are currently relevant and actually filled in.
+  function cleanExtras(schema, raw) {
+    const out = {};
+    for (const o of controls(schema)) {
+      if (!visible(o, raw)) continue;
+      const v = raw[o.name];
+      if (o.type === 'bool') { if (v === true) out[o.name] = true; continue; }
+      if (v === undefined || v === null || v === '') continue;
+      if (o.type === 'int' || o.type === 'float') {
+        const n = Number(v);
+        if (Number.isFinite(n)) out[o.name] = o.type === 'int' ? Math.round(n) : n;
+      } else {
+        out[o.name] = String(v);
+      }
+    }
+    return out;
+  }
+
+  async function watermark(base, file, spec, format, extra) {
+    const req = Object.assign({ spec: spec, format: format }, extra || {});
+    const res = await root.fetch((base || '') + '/api/watermark', {
+      method: 'POST',
+      headers: { 'X-WM-Spec': encodeURIComponent(JSON.stringify(req)) },
+      body: file,
+    });
+    if (!res.ok) {
+      let message = 'Server error (HTTP ' + res.status + ')';
+      try { message = (await res.json()).error.message; } catch (e) { /* keep the generic message */ }
+      const err = new Error(message);
+      err.status = res.status;
+      throw err;
+    }
+    return { blob: await res.blob(), meta: JSON.parse(res.headers.get('X-WM-Result') || '{}') };
+  }
+
+  root.WmServer = { PAGE_COVERED, baseUrl, detect, pageToSpec, controls, visible, cleanExtras, watermark };
+})(typeof window !== 'undefined' ? window : globalThis);
+</script>
 <script>
 (function () {
   // ---------------------------------------------------------------------
@@ -712,7 +857,7 @@
   const progressFill = document.getElementById('progress-fill');
   const progressLabel = document.getElementById('progress-label');
 
-  let images = [];        // { id, name, img (HTMLImageElement), thumbEl }
+  let images = [];        // { id, name, img (HTMLImageElement), file (File), thumbEl }
   let activeId = null;
   let outputFormat = 'png';
   let currentColor = '#ffffff';
@@ -855,7 +1000,7 @@
       reader.onload = (e) => {
         const img = new Image();
         img.onload = () => {
-          const entry = { id: nextId++, name, img };
+          const entry = { id: nextId++, name, img, file };
           images.push(entry);
           addThumb(entry);
           if (firstNewId === null) firstNewId = entry.id;
@@ -958,9 +1103,222 @@
     URL.revokeObjectURL(url);
   }
 
+  // ---- Server mode: progressive enhancement -------------------------------------------
+  // Off unless a wmapp server (cli/serve.py) answers /api/schema; on only if the user opts in.
+  const serverBase = WmServer.baseUrl(location.search);
+  const serverPanel = document.getElementById('server-panel');
+  const serverToggle = document.getElementById('srv-toggle');
+  const serverStatus = document.getElementById('srv-status');
+  const serverOptions = document.getElementById('srv-options');
+  const serverPreviewBtn = document.getElementById('srv-preview-btn');
+  const serverNotes = document.getElementById('srv-notes');
+  const footnoteEl = document.getElementById('footnote');
+  const footnoteLocal = footnoteEl.textContent;
+  const serverInputs = {};           // option name -> { opt, input, row }
+  let server = null;                 // the /api/schema payload once a server answered
+  let serverOn = false;
+
+  function buildServerPanel() {
+    const titles = {};
+    server.groups.forEach((g) => { titles[g.id] = g.title; });
+    let lastGroup = null;
+    WmServer.controls(server).forEach((opt) => {
+      if (opt.group !== lastGroup) {
+        const h = document.createElement('p');
+        h.className = 'srv-group';
+        h.textContent = titles[opt.group] || opt.group;
+        serverOptions.appendChild(h);
+        lastGroup = opt.group;
+      }
+      const id = 'srv-' + opt.name;
+      const row = document.createElement('div');
+      row.className = 'srv-row';
+      const label = document.createElement('label');
+      label.htmlFor = id;
+      label.textContent = opt.name.replace(/_/g, ' ');
+      label.title = opt.help;
+      let input;
+      if (opt.type === 'bool') {
+        input = document.createElement('input');
+        input.type = 'checkbox';
+        input.checked = !!opt.default;
+      } else if (opt.type === 'choice') {
+        input = document.createElement('select');
+        opt.choices.forEach((c) => {
+          const o = document.createElement('option');
+          o.value = o.textContent = c;
+          input.appendChild(o);
+        });
+        input.value = opt.default;
+      } else if (opt.type === 'int' || opt.type === 'float') {
+        input = document.createElement('input');
+        input.type = 'number';
+        if (opt.min !== undefined) input.min = opt.min;
+        if (opt.max !== undefined) input.max = opt.max;
+        input.step = opt.type === 'int' ? '1' : 'any';
+        if (opt.default !== null && opt.default !== undefined) input.value = opt.default;
+      } else {
+        input = document.createElement('input');
+        input.type = 'text';
+      }
+      input.id = id;
+      input.title = opt.help;
+      input.addEventListener(opt.type === 'bool' || opt.type === 'choice' ? 'change' : 'input', refreshServerVisibility);
+      row.append(label, input);
+      serverOptions.appendChild(row);
+      serverInputs[opt.name] = { opt, input, row };
+    });
+    refreshServerVisibility();
+  }
+
+  function readServerValues() {
+    const raw = {};
+    Object.keys(serverInputs).forEach((name) => {
+      const { opt, input } = serverInputs[name];
+      raw[name] = opt.type === 'bool' ? input.checked : input.value;
+    });
+    return raw;
+  }
+
+  function refreshServerVisibility() {
+    const raw = readServerValues();
+    Object.keys(serverInputs).forEach((name) => {
+      const { opt, row } = serverInputs[name];
+      row.hidden = !WmServer.visible(opt, raw);
+    });
+  }
+
+  function serverSpec() {
+    const page = WmServer.pageToSpec({
+      text: textInput.value, opacityPct: Number(opacityInput.value), spacing: Number(spacingInput.value),
+      fontSize: Number(fontsizeInput.value), angle: Number(angleInput.value),
+    });
+    return Object.assign(page, WmServer.cleanExtras(server, readServerValues()));
+  }
+
+  function showServerResult(meta, error) {
+    serverNotes.innerHTML = '';
+    const add = (text, cls) => {
+      const li = document.createElement('li');
+      li.textContent = text;
+      if (cls) li.className = cls;
+      serverNotes.appendChild(li);
+    };
+    if (error) add(error.message, 'error');
+    if (meta) {
+      if (meta.ss_key !== null && meta.ss_key !== undefined) {
+        add('Key to read the hidden mark back: ' + meta.ss_key + ' (save it - it is not stored anywhere)', 'key');
+        const k = serverInputs.ss_key;
+        if (k && !k.input.value) k.input.value = meta.ss_key;   // later images in a batch reuse it
+      }
+      (meta.notes || []).forEach((n) => add(n.message.replace(/^(Note|Warning): /, '')));
+    }
+    serverNotes.hidden = serverNotes.children.length === 0;
+  }
+
+  function setServerBusy(on, label) {
+    busy = on;
+    downloadBtn.disabled = on;
+    downloadAllBtn.disabled = on || images.length < 1;
+    serverPreviewBtn.disabled = on;
+    if (label) serverStatus.textContent = label;
+    if (!on) serverStatus.textContent = 'Rendering on ' + (serverBase || location.origin) + ' with the full pipeline.';
+  }
+
+  function serverRender(entry, extra) {
+    return WmServer.watermark(serverBase, entry.file, serverSpec(), outputFormat, extra);
+  }
+
+  async function serverDownloadOne(entry) {
+    if (busy) return;
+    setServerBusy(true, 'Rendering on server…');
+    try {
+      const { blob, meta } = await serverRender(entry);
+      triggerDownload(blob, entry.name + '_watermark.' + (outputFormat === 'jpeg' ? 'jpg' : 'png'));
+      showServerResult(meta);
+    } catch (err) {
+      showServerResult(null, err);
+    } finally {
+      setServerBusy(false);
+    }
+  }
+
+  async function serverDownloadAll() {
+    if (busy) return;
+    setServerBusy(true);
+    progressWrap.hidden = false;
+    const ext = outputFormat === 'jpeg' ? 'jpg' : 'png';
+    const zipFiles = [];
+    const usedNames = new Set();
+    let lastMeta = null;
+    try {
+      for (let i = 0; i < images.length; i++) {
+        const entry = images[i];
+        progressLabel.textContent = `Rendering on server ${i + 1} / ${images.length} — ${entry.name}`;
+        progressFill.style.width = Math.round((i / images.length) * 100) + '%';
+        // same seed rule as `watermark.py --batch --seed N`: each file gets its own jitter pattern
+        const { blob, meta } = await serverRender(entry, { derive_seed_from: entry.file.name });
+        lastMeta = meta;
+        let name = entry.name + '_watermark.' + ext;
+        let n = 2;
+        while (usedNames.has(name)) { name = entry.name + '_watermark_' + n + '.' + ext; n++; }
+        usedNames.add(name);
+        zipFiles.push({ name, data: new Uint8Array(await blob.arrayBuffer()) });
+        showServerResult(meta);        // also carries a generated ss_key into the form for the next image
+      }
+      progressLabel.textContent = 'Building .zip…';
+      await new Promise((r) => setTimeout(r, 0));
+      triggerDownload(buildZip(zipFiles), 'watermarked_images.zip');
+    } catch (err) {
+      showServerResult(lastMeta, err);
+    } finally {
+      progressWrap.hidden = true;
+      setServerBusy(false);
+    }
+  }
+
+  serverPreviewBtn.addEventListener('click', async () => {
+    const entry = activeEntry();
+    if (!entry || busy) return;
+    setServerBusy(true, 'Rendering preview on server…');
+    try {
+      const { blob, meta } = await serverRender(entry);
+      const bmp = await createImageBitmap(blob);
+      canvas.width = bmp.width;
+      canvas.height = bmp.height;
+      ctx.drawImage(bmp, 0, 0);          // any later control change redraws the local preview over this
+      showServerResult(meta);
+    } catch (err) {
+      showServerResult(null, err);
+    } finally {
+      setServerBusy(false);
+    }
+  });
+
+  serverToggle.addEventListener('change', () => {
+    serverOn = serverToggle.checked;
+    serverOptions.hidden = serverPreviewBtn.hidden = !serverOn;
+    document.querySelector('.swatches').classList.toggle('locked', serverOn);   // the server's mark is white
+    footnoteEl.textContent = serverOn
+      ? 'Server mode: each image is sent to ' + (serverBase || location.origin) +
+        ' to be watermarked, and is not stored there. Turn it off to keep everything in this browser.'
+      : footnoteLocal;
+    serverStatus.textContent = serverOn
+      ? 'Rendering on ' + (serverBase || location.origin) + ' with the full pipeline. The preview here is approximate.'
+      : 'A local server is available. Turn this on for jitter, blend modes, invisible marks, metadata and C2PA.';
+  });
+
+  WmServer.detect(serverBase).then((info) => {
+    if (!info) return;
+    server = info;
+    buildServerPanel();
+    serverPanel.hidden = false;
+  });
+
   downloadBtn.addEventListener('click', async () => {
     const entry = activeEntry();
     if (!entry) return;
+    if (serverOn) { await serverDownloadOne(entry); return; }
     const mime = outputFormat === 'jpeg' ? 'image/jpeg' : 'image/png';
     const ext = outputFormat === 'jpeg' ? 'jpg' : 'png';
     const quality = outputFormat === 'jpeg' ? 0.98 : undefined;
@@ -971,6 +1329,7 @@
 
   downloadAllBtn.addEventListener('click', async () => {
     if (busy || images.length === 0) return;
+    if (serverOn) { await serverDownloadAll(); return; }
     busy = true;
     downloadBtn.disabled = true;
     downloadAllBtn.disabled = true;

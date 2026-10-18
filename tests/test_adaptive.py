@@ -1,7 +1,9 @@
 """Unit tests for the content-adaptive placement feature: the sensitivity
 map (wmcore.compute_sensitivity_map), the ink-map math it feeds into
-multiply/overlay blending (wmcore.build_ink_map), and the extra masked grid
-layer it feeds into create_watermark_layer.
+multiply/overlay blending (wmcore.build_ink_map), the extra masked grid
+layer it feeds into create_watermark_layer, and the video-only temporal
+tracker (wmcore.AdaptiveTracker) that keeps a sensitivity map current across
+frames instead of freezing it at whatever frame first detected it.
 
 These don't try to validate face-detection accuracy (that would need real
 photos and a much heavier fixture) - they pin down the parts that are pure,
@@ -10,10 +12,13 @@ sensitivity_map=None behaves exactly like before" and "never crosses the
 blend mode's own no-op point" guarantees the rest of the feature leans on.
 """
 
+from unittest.mock import patch
+
 import numpy as np
 import pytest
 
 import wmcore
+from wmcore.adaptive import AdaptiveTracker
 
 
 # ---------------------------------------------------------------------------
@@ -154,3 +159,107 @@ class TestAdaptiveGridLayer:
         bad_map = np.ones((200, 150), dtype=np.float32)  # swapped on purpose
         with pytest.raises(ValueError):
             wmcore.create_watermark_layer(size, "@test", sensitivity_map=bad_map, adaptive_strength=0.6)
+
+
+# ---------------------------------------------------------------------------
+# AdaptiveTracker: video-only temporal tracking of the sensitivity map
+# ---------------------------------------------------------------------------
+
+def _panned_frames(patch_at, dx, size=(160, 220), patch_size=28, seed=5):
+    """Two overlapping crops of one static scene, offset by dx along x - a
+    camera pan (or the world sliding past a fixed camera) between frame A
+    and frame B. The scene is a smooth, low-detail gradient everywhere
+    except for one small textured "subject" patch, so:
+      - compute_sensitivity_map has exactly one thing to find (the patch),
+        making "did the tracked peak follow it" unambiguous to check;
+      - the whole frame still undergoes genuine, coherent pixel motion (the
+        gradient shifts too), which is what dense optical flow needs to
+        produce a reliable, roughly-uniform flow field to warp with.
+    Returns (frame_a, frame_b); the patch sits `dx` px further left in B
+    than in A, matching how content recedes when a camera pans right.
+    """
+    h, w = size
+    margin = dx + 5
+    big = np.zeros((h, w + margin, 3), dtype=np.uint8)
+    grad = np.linspace(60, 180, w + margin, dtype=np.uint8)
+    big[:, :, :] = grad[None, :, None]
+    rng = np.random.RandomState(seed)
+    px, py = patch_at
+    big[py:py + patch_size, px:px + patch_size] = rng.randint(0, 255, (patch_size, patch_size, 3), dtype=np.uint8)
+    return big[:, :w], big[:, dx:dx + w]
+
+
+class TestAdaptiveTracker:
+    def test_first_update_detects_and_returns_full_res_map(self):
+        frame, _ = _panned_frames(patch_at=(20, 20), dx=15)
+        tracker = AdaptiveTracker(detail_weight=1.0)
+        out = tracker.update(frame)
+        assert out.shape == frame.shape[:2]
+        assert out.dtype == np.float32
+        assert out.min() >= 0.0 and out.max() <= 1.0
+        assert tracker.last_cut is False  # nothing to compare against yet
+
+    def test_tracked_peak_follows_a_panning_scene(self):
+        # redetect_every_frames is set way above the number of calls we make,
+        # so the second update can ONLY be explained by the flow-warp path,
+        # not by a second, independent detection happening to land in the
+        # right place.
+        dx = 16
+        frame_a, frame_b = _panned_frames(patch_at=(100, 60), dx=dx)
+        tracker = AdaptiveTracker(detail_weight=1.0, redetect_every_frames=10_000, cut_threshold=0.9)
+        tracker.update(frame_a)
+        out_b = tracker.update(frame_b)
+        assert tracker.last_cut is False
+
+        peak_a_x = 100 + 14  # patch center's x in frame_a
+        peak_b_x = peak_a_x - dx  # same physical patch, dx px further left in frame_b
+
+        col_scores = out_b.mean(axis=0)  # collapse rows -> per-column sensitivity
+        tracked_peak_x = int(np.argmax(col_scores))
+        # Flow on a downscaled image is approximate - allow some slack, but
+        # it must land meaningfully closer to the patch's NEW position than
+        # to where it used to be (a bug that skips the warp, or warps the
+        # wrong way, would instead stay at peak_a_x or overshoot to
+        # peak_a_x - 2*dx - see _warp_with_flow's docstring).
+        assert abs(tracked_peak_x - peak_b_x) < abs(tracked_peak_x - peak_a_x)
+        assert abs(tracked_peak_x - peak_b_x) <= dx // 2
+
+    def test_static_scene_does_not_redetect_every_frame(self):
+        frame, _ = _panned_frames(patch_at=(20, 20), dx=15)
+        with patch("wmcore.adaptive._sensitivity_from_small_gray", wraps=wmcore.adaptive._sensitivity_from_small_gray) as spy:
+            tracker = AdaptiveTracker(detail_weight=1.0, redetect_every_frames=2, cut_threshold=0.9)
+            for _ in range(5):
+                tracker.update(frame)
+            # calls 1 and 4 detect (frames_since_detect resets each time);
+            # calls 2, 3, 5 are pure flow-tracks - see the cadence math in
+            # AdaptiveTracker.update's need_detect check.
+            assert spy.call_count == 2
+
+    def test_scene_cut_forces_redetect_and_skips_flow(self):
+        frame_a, _ = _panned_frames(patch_at=(20, 20), dx=15, seed=1)
+        # An unrelated, much brighter scene - a stand-in for a hard cut to a
+        # different shot, not a pan of the same one.
+        frame_cut = np.full_like(frame_a, 250)
+
+        with patch("wmcore.adaptive._sensitivity_from_small_gray", wraps=wmcore.adaptive._sensitivity_from_small_gray) as detect_spy, \
+             patch("wmcore.adaptive._dense_flow", wraps=wmcore.adaptive._dense_flow) as flow_spy:
+            tracker = AdaptiveTracker(detail_weight=1.0, redetect_every_frames=10_000, cut_threshold=0.12)
+            tracker.update(frame_a)
+            assert detect_spy.call_count == 1
+            tracker.update(frame_cut)
+            assert tracker.last_cut is True
+            # The cut must trigger a fresh detection (ignoring the very high
+            # redetect_every_frames) and must NOT bother computing flow
+            # across content that just doesn't correspond frame-to-frame.
+            assert detect_spy.call_count == 2
+            assert flow_spy.call_count == 0
+
+    def test_mismatched_frame_size_does_not_crash(self):
+        # A resolution change mid-stream (unusual, but shouldn't be fatal):
+        # same as a cut - detect fresh at the new size, no flow warp.
+        frame_a, _ = _panned_frames(patch_at=(20, 20), dx=15, size=(100, 140))
+        frame_b, _ = _panned_frames(patch_at=(20, 20), dx=15, size=(120, 200))
+        tracker = AdaptiveTracker(detail_weight=1.0)
+        tracker.update(frame_a)
+        out = tracker.update(frame_b)
+        assert out.shape == frame_b.shape[:2]

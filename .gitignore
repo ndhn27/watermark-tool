@@ -16,3 +16,14 @@ Thumbs.db
 # output/
 # *_watermark.jpg
 # *_watermark.png
+
+# Node (tests/js) and pytest
+node_modules/
+.pytest_cache/
+
+# Internal session notes
+HANDOFF-*.md
+
+# bench results: raw data stays local, notes are tracked (README links to them)
+bench/results/*
+!bench/results/*.md
